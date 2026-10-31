@@ -12,7 +12,7 @@
     "node": "^24.17.0 || ^26.13.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/stamp-runtime.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "demo:advice": "node --disable-warning=ExperimentalWarning --import ./test/fixtures/store-ledger/ts-hooks.ts services/advice/demo/main.ts",

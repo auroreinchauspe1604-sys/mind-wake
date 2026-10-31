@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { init } from "../../src/cli/commands/init.js";
 import { processContext, DEFAULT_PROFILE_ID } from "../../src/cli/context.js";
-import { toUtcTimestamp } from "../../src/journal/index.js";
+import { toUtcTimestamp, prepareJournalEvent } from "../../src/journal/index.js";
 import { StopFlag } from "../../src/runner/controls.js";
 import {
   MaintenanceController,
@@ -111,6 +111,48 @@ it("diagnostic reads real read-only Wake status, never claims HEAD as a loaded v
     f.close();
   }
 });
+it.each([true, false])(
+  "reinstall verifies all previously owned components, stale engine=%s",
+  async (stale) => {
+    const f = fixture();
+    try {
+      f.policy.grants[0]?.actions.push("relaunch_engine", "relaunch_mcp");
+      f.adapter.capabilities = () => [
+        "diagnose",
+        "reinstall",
+        "relaunch_app",
+        "relaunch_engine",
+        "relaunch_mcp",
+      ];
+      const old = {
+        state: "running" as const,
+        instance: randomUUID(),
+        loadedRevision: "c".repeat(40),
+        artifactSha256: "d".repeat(64),
+      };
+      f.o.components.daemon = { ...old };
+      f.o.components.mcp = { ...old, instance: randomUUID() };
+      f.adapter.execute = () => {
+        f.o.installedRevision = rev;
+        for (const component of ["app", "mcp", ...(!stale ? ["daemon" as const] : [])] as const)
+          f.o.components[component] = {
+            state: "running",
+            instance: randomUUID(),
+            loadedRevision: rev,
+            artifactSha256: "e".repeat(64),
+          };
+        return Promise.resolve();
+      };
+      const r = { ...request("reinstall"), release: "stable" };
+      f.c.accept(actor, r);
+      const result = await f.c.run(r.requestId);
+      expect(result.state).toBe(stale ? "failed" : "verified");
+      expect(result.verificationScope).toEqual(stale ? [] : ["install", "app", "daemon", "mcp"]);
+    } finally {
+      f.close();
+    }
+  },
+);
 
 it("real SQLite fixture profile is readable when disabled and paused without starting a model", async () => {
   const f = fixture();
@@ -147,6 +189,34 @@ it("real SQLite fixture profile is readable when disabled and paused without sta
     new StopFlag(dataDir).write("fixture emergency stop", toUtcTimestamp(new Date()));
     expect(local.controlState().forceOff).toBe(true);
     expect((await local.observe()).forceOff).toBe(true);
+  } finally {
+    f.close();
+  }
+});
+it("diagnostic counts real runtime failures without exporting their private reasons", async () => {
+  const f = fixture();
+  try {
+    const dataDir = join(f.dir, "health"),
+      ctx = processContext();
+    init(ctx, { path: dataDir, source: "option" });
+    const store = ctx.openStore(dataDir, "write");
+    try {
+      store.uow.journal.append(
+        prepareJournalEvent({
+          profileId: DEFAULT_PROFILE_ID,
+          type: "session_ended",
+          at: toUtcTimestamp(new Date()),
+          reason: "fixture-private-error-body",
+          metadata: { outcome: "failed" },
+        }),
+      );
+    } finally {
+      store.close();
+    }
+    const health = await new LocalMaintenanceAdapter({ dataDir, repoDir: process.cwd() }).observe();
+    expect(health.health?.failedEvents).toBe(1);
+    expect(health.health?.latestFailureAt).toBeTruthy();
+    expect(JSON.stringify(health)).not.toContain("fixture-private-error-body");
   } finally {
     f.close();
   }

@@ -2,8 +2,9 @@
 
 Cette tranche fournit le diagnostic MCP de bout en bout et un contrôleur local
 durable. Le superviseur desktop dispose maintenant d'un raccord opt-in pour
-`relaunch_app` et `reinstall` (installation + app). Les cycles daemon et MCP restent
-distincts et non pris en charge par ce raccord. Aucune installation distante n'est
+`relaunch_app`, `relaunch_engine`, `relaunch_mcp` et `reinstall`. Les composants Node
+ont leurs propres lanceurs locaux ; le panneau les contacte par IPC authentifié.
+Aucune installation distante n'est
 activée par la présence du code.
 
 ## Raccord au superviseur installé
@@ -30,8 +31,9 @@ disposer du relais `--maintenance-relay` et le client de `MIND_WAKE_MAINTENANCE=
 Le superviseur relit la policy locale et vérifie l'identité authentifiée avant
 chaque tick. Le hub hors ligne laisse l'app locale ouverte. Le contrôleur peut
 diagnostiquer en Pause ; toute mutation est refusée pendant Pause/Force-off.
-Il ne possède que l'app qu'il a lui-même lancée : aucun PID découvert, moteur,
-MCP d'une autre session ou processus de l'utilisateur n'est arrêté.
+Il possède l'app qu'il a lancée et peut demander au propriétaire du moteur ou
+d'un worker MCP MIND de remplacer son enfant. Aucun PID découvert, autre MCP du
+fournisseur ou processus de l'utilisateur n'est adopté ni arrêté.
 
 Les builds nouveaux produisent après leur initialisation un reçu local avec
 PID, nonce d'instance et révision compilée. Le superviseur confronte ce reçu à
@@ -44,8 +46,62 @@ immuables ; les commandes build tournent dans des Job Objects appartenant au
 superviseur, annulables par les contrôles locaux. La garde est relue avant chaque
 commande, avant le basculement du manifeste et avant le handoff app. Le catalogue
 local doit approuver le commit complet ; le pair ne fournit ni URL ni shell.
-Le résultat vérifie install + app ; les versions chargées daemon/MCP restent
-inconnues et ne sont pas présentées comme mises à jour.
+Le résultat vérifie install + app et chaque composant moteur/MCP possédé qui était
+actif avant l'opération. Il refuse le succès si l'un de ces composants garde son
+ancienne instance ou ne charge pas le commit attendu. Un composant sans
+propriétaire ou sans reçu reste inconnu ; il n'est pas présenté comme mis à jour.
+
+### Propriétaires moteur et MCP
+
+`engine-supervisor.mjs` est utilisé par les nouveaux démarrages du moteur depuis
+le panneau ou le lancement Windows. Il survit à la fermeture du panneau, garde
+le contrôle de son seul enfant et attend son arrêt propre via IPC avant de le
+recréer depuis le manifeste actuel. Il ne lève ni Pause ni Force-off.
+Son enfant et ses descendants restent dans un Job Object possédé par ce lanceur ;
+la disparition du propriétaire ferme aussi cette arborescence. L'arrêt normal
+transmet une commande JSON sur le stdin privé du moteur, puis attend sa fermeture.
+
+Le lanceur agent `start-local.mjs` utilise `owned-mcp.mjs`. Ce proxy conserve la
+connexion stdio du fournisseur, renvoie une erreur aux requêtes interrompues,
+réinitialise le nouveau worker MIND puis traite les nouvelles requêtes. Les autres
+serveurs MCP configurés dans Codex/Claude ne sont pas concernés. Un client encore
+non initialisé ne peut pas être relancé. Les anciennes installations doivent
+effectivement démarrer ces nouveaux lanceurs pour exposer ces capacités.
+
+Pour rattacher également le MCP de messages partagés au même propriétaire Wake,
+`setup-shared-messages.mjs` accepte `--wake-manifest CHEMIN_ABSOLU`. Le fragment
+produit emploie alors `owned-shared-mcp.mjs`, conserve l'identité existante et
+recharge la source sélectionnée par le manifeste après chaque relance. Sans cette
+option, le bootstrap indépendant à quatre modules conserve son fonctionnement.
+
+`npm run build` génère `dist/runtime-build.json` : révision, propreté de la source
+et hashes des modules Node distribués. Le moteur après enregistrement de son
+démarrage, et le MCP après connexion de son transport, émettent un reçu local.
+Un stamp absent, sale ou ne correspondant plus aux dépendances donne une version
+chargée inconnue, même si Git HEAD ou le manifeste semblent récents.
+Le lanceur MCP géré par l'installation relit désormais le manifeste à chaque
+démarrage. L'updater migre l'ancien lanceur standard vers ce format sans changer
+la configuration du fournisseur ni écraser un lanceur personnalisé.
+
+Le diagnostic inclut aussi `health` : nombre d'événements observés, échecs runtime,
+date du dernier échec, dernier résultat de session, et dates réception/émission/
+publication du canal propriétaire. Aucun texte de conversation ni erreur privée
+brute n'est transmis.
+
+### Commande client prête à utiliser
+
+Depuis le clone complet, la même opération que les outils MCP est disponible :
+
+```powershell
+node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./test/fixtures/store-ledger/ts-hooks.ts scripts/maintenance-client.mjs --binding C:/private/shared-binding.json --target agent-bbbbbbbbbb --action reinstall --release stable --wait
+```
+
+Le catalogue `stable` appartient à la policy locale cible et désigne le commit
+approuvé. La requête est sauvegardée à côté du binding avant envoi. Un nouvel appel
+avec le même `--request-id` réutilise exactement son corps et ses dates ; un timeout
+ne déclenche pas une nouvelle commande. Pour consulter sans soumettre : remplacer
+les options cible/action/release par `--result UUID`. Code de sortie 0 signifie
+résultat vérifié, 1 refus/échec/transport inconnu, 2 résultat encore non terminal.
 
 La recette filesystem de [SHARED-WORKSPACE.md](SHARED-WORKSPACE.md) reste le
 complément pour le service de fichiers supervisé, le credential client et la
@@ -143,9 +199,9 @@ URL, clé ou argument de processus. Le catalogue local associe par exemple
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | `diagnose`        | Vrai lecteur Wake, sans modèle, MCP/HTTPS/SQLite/processus cible testés                                                | Oui, avec grant                                        |
 | `pull_source`     | Helper Git supervisé existant, racine/branche/origin locaux vérifiés, fetch puis commit approuvé et merge fast-forward | Seulement si source locale configurée                  |
-| `relaunch_app`    | Handoff vers `OwnedLifecycle`, nouvelle instance et révision chargée exigées                                           | Indisponible sans propriétaire branché                 |
-| `relaunch_mcp`    | Même contrat ; aucun MCP lancé par un hôte externe n'est tué                                                           | Indisponible sans propriétaire branché                 |
-| `relaunch_engine` | Même contrat ; pas de daemon de secours détaché                                                                        | Indisponible sans propriétaire branché                 |
+| `relaunch_app`    | Handoff vers `OwnedLifecycle`, nouvelle instance et révision chargée exigées                                           | Propriétaire app du superviseur desktop                |
+| `relaunch_mcp`    | Proxy stdio possédé, réinitialisation du worker MIND et nouveau reçu exigés                                            | Disponible pour les nouveaux lanceurs MCP MIND         |
+| `relaunch_engine` | Handoff du lanceur moteur indépendant du panneau, arrêt propre et nouveau reçu exigés                                  | Disponible pour les moteurs lancés par le propriétaire |
 | `reinstall`       | Callback local vers `checkUpdate`, fetch/build/release immuable avant handoff app, révision attendue exigée            | Indisponible sans updater supervisé + propriétaire app |
 
 Le pull refuse les modifications locales, une branche/origin différente, une
@@ -172,10 +228,10 @@ explicitement. Pas de succès déduit d'exit0. Le superviseur doit rendre le nou
 composant joignable avant de rendre la main : aucun retry de restart automatique.
 
 Chaque résultat précise `verificationScope` et `versionComparison` par composant.
-La preuve de réinstallation de cette tranche porte sur **install + app**. Elle
-ne certifie pas que daemon et MCP sont à jour ; leurs écarts/inconnues restent
-visibles dans le même résultat. Une mise à jour complète devra composer leurs
-handoffs possédés et vérifier les trois versions chargées.
+La vérification de réinstallation porte sur **install + app** et les propriétaires
+moteur/MCP qui étaient actifs avant le handoff. Ces composants doivent tous changer
+d'instance et charger le commit attendu. Les composants sans propriétaire restent
+inconnus ; `verificationScope` indique exactement ceux qui ont été vérifiés.
 
 ## Recette deux postes, après revue et intégration séparées
 
@@ -217,8 +273,12 @@ Le raccord desktop ci-dessus ajoute le pump et les reçus app au superviseur
 existant. Les tests `desktop-owner.node.mjs` et `desktop-supervisor.process.test.ts`
 exercent de vrais processus Node de fixture, la relance et le transport HTTPS ;
 ils ne constituent pas un essai du binaire Windows sur le poste d'Aurore.
-Prochaine tâche : produire les reçus daemon/MCP dans leurs propriétaires respectifs,
-puis exécuter la recette deux postes avec les grants du propriétaire cible. Le bootstrap client
+Les reçus daemon/MCP sont maintenant produits par leurs composants et vérifiés
+par leurs propriétaires. Les essais `owned-runtimes.node.mjs` incluent un vrai
+client MCP conservé à travers une relance, un moteur de fixture avec arrêt IPC,
+et la détection d'une dépendance modifiée après build. Prochaine étape : publier
+la release et exécuter la recette deux postes avec les paramètres et grants cibles.
+Le bootstrap client
 shared à quatre modules ne distribue pas encore ces nouveaux modules : lancer
 depuis le clone complet pour la recette actuelle. Pas d'UI de grants, de mode
 offline/outbox sender, de heartbeat cible, de rétention automatique, de rollback

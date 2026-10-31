@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 import { checkUpdate, development } from "../../scripts/app-update.mjs";
 
 function fixture(t) {
@@ -53,6 +55,35 @@ test("development defaults are fail-closed; no fetch even on demand", async (t) 
   fs.writeFileSync(f.file, JSON.stringify({ ...f.m, development: true }));
   assert.equal((await checkUpdate(f.file, { run: f.run })).state, "disabled");
   assert.equal(f.calls.length, 0);
+});
+test("update migrates the managed MCP launcher so the next real Node launch selects the installed release", async (t) => {
+  const f = fixture(t),
+    launcher = path.join(f.dir, "mcp.mjs");
+  fs.writeFileSync(
+    launcher,
+    `import {startLocal} from ${JSON.stringify(pathToFileURL(path.join(f.m.repoDir, "scripts/start-local.mjs")).href)};\nawait startLocal(${JSON.stringify(f.file)},'agent');\n`,
+  );
+  assert.equal((await checkUpdate(f.file, { run: f.run })).state, "installed");
+  const current = JSON.parse(fs.readFileSync(f.file, "utf8"));
+  fs.mkdirSync(path.join(current.repoDir, "scripts"), { recursive: true });
+  fs.writeFileSync(
+    path.join(current.repoDir, "scripts/start-local.mjs"),
+    `export async function startLocal(file,role){console.log(JSON.stringify({file,role,version:'new-release'}));}`,
+  );
+  const observed = JSON.parse(
+    execFileSync(process.execPath, [launcher], { encoding: "utf8", windowsHide: true }),
+  );
+  assert.equal(observed.version, "new-release");
+  assert.equal(observed.file, f.file);
+  assert.equal(observed.role, "agent");
+});
+test("update leaves a personally modified MCP launcher intact", async (t) => {
+  const f = fixture(t),
+    launcher = path.join(f.dir, "mcp.mjs"),
+    custom = "// custom owner launcher\n";
+  fs.writeFileSync(launcher, custom);
+  assert.equal((await checkUpdate(f.file, { run: f.run })).state, "installed");
+  assert.equal(fs.readFileSync(launcher, "utf8"), custom);
 });
 test("stage a simulated release, switch only on success, skip unchanged revision", async (t) => {
   const f = fixture(t);

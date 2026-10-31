@@ -15,7 +15,7 @@ import {
   type WorkspaceConfig,
 } from "./workspace-config.js";
 
-export const WORKSPACE_SYNC_INTERVAL = 5 * 60_000;
+export const WORKSPACE_SYNC_INTERVAL = 60_000;
 const stateSchema = z.strictObject({
   status: z.enum([
     "disabled",
@@ -38,7 +38,15 @@ const stateFile = (dir: string) => path.join(dir, "workspace-sync-state.json");
 const requestFile = (dir: string) => path.join(dir, "workspace-sync-now.json");
 const fingerprint = (c: WorkspaceConfig) =>
   createHash("sha256")
-    .update(JSON.stringify([c.workspaceDir, c.githubUrl, c.enabled, c.activeWorkspace]))
+    .update(
+      JSON.stringify([
+        c.workspaceDir,
+        c.githubUrl,
+        c.enabled,
+        c.activeWorkspace,
+        WORKSPACE_SYNC_INTERVAL,
+      ]),
+    )
     .digest("hex");
 function emptyState(c: WorkspaceConfig): SyncState {
   return {
@@ -71,7 +79,7 @@ class GitCommandError extends Error {
     readonly transient: boolean,
   ) {
     super(
-      `Git ${operation} failed${transient ? " (temporary network failure; retry in five minutes)" : "; inspect the repository locally"}.`,
+      `Git ${operation} failed${transient ? " (temporary network failure; retry in one minute)" : "; inspect the repository locally"}.`,
     );
   }
 }

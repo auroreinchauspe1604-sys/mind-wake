@@ -1,8 +1,8 @@
 /** Shared local installation files. No model call or daemon activation. */
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { createHash, randomBytes } from "node:crypto";
+import { managedMcpLauncher } from "./managed-mcp-launcher.mjs";
 export function desktopExecutable(repoDir) {
   const portable = path.join(repoDir, "bin/mind-wake-desktop.exe");
   return fs.existsSync(portable)
@@ -74,11 +74,7 @@ export function prepareInstallation(repoDir, dataDir, codex) {
   fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
   // The launcher reads the local key file; no credential in the Codex registration.
   const launcher = path.join(dir, "mcp.mjs");
-  const start = path.join(repoDir, "scripts/start-local.mjs");
-  fs.writeFileSync(
-    launcher,
-    `import {startLocal} from ${JSON.stringify(pathToFileURL(start).href)};\nawait startLocal(${JSON.stringify(manifestFile)},'agent');\n`,
-  );
+  fs.writeFileSync(launcher, managedMcpLauncher(manifestFile));
   const mcpFile = path.join(dir, "claude-mcp.json");
   fs.writeFileSync(
     mcpFile,

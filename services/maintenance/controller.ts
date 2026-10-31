@@ -383,8 +383,22 @@ export class MaintenanceController {
         c.instance !== old?.components[key].instance &&
         c.loadedRevision !== null &&
         (!result.expectedRevision || c.loadedRevision === result.expectedRevision);
-      if (r.action === "reinstall")
+      if (r.action === "reinstall") {
         ok = ok && observation.installedRevision === result.expectedRevision;
+        for (const [action, component] of [
+          ["relaunch_engine", "daemon"],
+          ["relaunch_mcp", "mcp"],
+        ] as const) {
+          if (!result.capabilities.includes(action)) continue;
+          const loaded = observation.components[component];
+          ok =
+            ok &&
+            loaded.state === "running" &&
+            loaded.instance !== null &&
+            loaded.instance !== old?.components[component].instance &&
+            loaded.loadedRevision === result.expectedRevision;
+        }
+      }
     }
     return this.save({
       ...result,
@@ -393,7 +407,12 @@ export class MaintenanceController {
         ? r.action === "pull_source"
           ? ["source"]
           : r.action === "reinstall"
-            ? ["install", "app"]
+            ? [
+                "install",
+                "app",
+                ...(result.capabilities.includes("relaunch_engine") ? ["daemon" as const] : []),
+                ...(result.capabilities.includes("relaunch_mcp") ? ["mcp" as const] : []),
+              ]
             : key
               ? [key]
               : []

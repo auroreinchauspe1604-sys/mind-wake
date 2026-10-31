@@ -204,8 +204,16 @@ fn start_daemon(status_json: &str) -> Result<(), String> {
         .map_err(|e| format!("journal du daemon : {e}"))?;
     let err = log.try_clone().map_err(|e| e.to_string())?;
     let mut command = Command::new(node());
+    let manifest = data_dir.join("installation/manifest.json");
+    if manifest.is_file() {
+        let installation: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        let repo = installation["repoDir"].as_str().ok_or("Source installée inconnue")?;
+        command.args(["--experimental-transform-types", "--disable-warning=ExperimentalWarning", "--import"])
+            .arg(PathBuf::from(repo).join("test/fixtures/store-ledger/ts-hooks.ts"))
+            .arg(PathBuf::from(repo).join("scripts/engine-supervisor.mjs"))
+            .arg("--manifest").arg(manifest);
+    } else { command.args(wake_args(&["daemon", "run"]) ?); }
     command
-        .args(wake_args(&["daemon", "run"])?)
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(err);
@@ -229,6 +237,28 @@ pub fn restart_daemon() -> Result<CliRun, String> {
     let status: serde_json::Value = serde_json::from_str(&before.stdout).map_err(|e| e.to_string())?;
     if before.exit_code != 0 || status["ok"] != true {
         return Err("État du moteur indisponible ; aucun processus arrêté".into());
+    }
+    if let Some(dir) = status["data"]["dataDir"].as_str() {
+        let manifest = PathBuf::from(dir).join("installation/manifest.json");
+        if manifest.is_file() {
+            let installation: serde_json::Value = serde_json::from_slice(&std::fs::read(&manifest).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+            if let Some(repo) = installation["repoDir"].as_str() {
+                let mut owner = Command::new(node());
+                owner.args(["--experimental-transform-types", "--disable-warning=ExperimentalWarning", "--import"])
+                    .arg(PathBuf::from(repo).join("test/fixtures/store-ledger/ts-hooks.ts"))
+                    .arg(PathBuf::from(repo).join("scripts/owned-runtime-control.mjs"))
+                    .arg("--manifest").arg(&manifest).args(["--role","daemon","--action","restart"]);
+                #[cfg(windows)] { use std::os::windows::process::CommandExt; owner.creation_flags(0x0800_0000); }
+                if let Ok(output) = owner.output() {
+                    if let Ok(result) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+                        if result["owned"] == true {
+                            if result["ok"] != true { return Err("Relance refusée par le propriétaire du moteur ; vérifier Pause et Force-off".into()); }
+                            return wake(Verb::Status);
+                        }
+                    }
+                }
+            }
+        }
     }
     let old_pid = status["data"]["daemon"]["pid"].as_u64();
     if status["data"]["daemon"]["state"] == "running" {

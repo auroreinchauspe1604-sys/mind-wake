@@ -1,4 +1,5 @@
 import type { WakeScreenshotChoice } from "../../daemon/wake-screenshot.js";
+import { createInterface } from "node:readline";
 /**
  * `daemon run` : daemon Wake au premier plan, dans le terminal de l'humain. Ni service
  * Windows, ni tâche planifiée, ni démarrage automatique : il s'arrête avec Ctrl+C (fin
@@ -117,10 +118,38 @@ export async function daemonRun(
     }
   });
   let summary: DaemonSummary;
+  const isOwnedEngine = !!process.env["MIND_WAKE_OWNED_INSTANCE"];
+  const ownedStop = (message: unknown): void => {
+    if (
+      isOwnedEngine &&
+      typeof message === "object" &&
+      message !== null &&
+      "type" in message &&
+      message.type === "wake_owned_stop"
+    )
+      daemon.requestStop("redémarrage demandé au superviseur propriétaire");
+  };
+  process.on("message", ownedStop);
+  const ownedInput = isOwnedEngine ? createInterface({ input: process.stdin }) : null;
+  ownedInput?.on("line", (line) => {
+    try {
+      ownedStop(JSON.parse(line));
+    } catch {
+      /* Parent control channel accepts only typed JSON. */
+    }
+  });
+  const disconnected = (): void => {
+    if (isOwnedEngine) daemon.requestStop("superviseur propriétaire déconnecté");
+  };
+  process.on("disconnect", disconnected);
   try {
     summary = await daemon.run();
   } finally {
     detach?.();
+    process.removeListener("message", ownedStop);
+    process.removeListener("disconnect", disconnected);
+    ownedInput?.close();
+    if (isOwnedEngine && process.connected) process.disconnect();
   }
   return {
     exitCode: EXIT_OK,

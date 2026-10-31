@@ -12,6 +12,7 @@
  */
 
 import { recordHubReceived } from "../../src/communication/received-messages.js";
+import { writeRuntimeReceipt } from "../../src/communication/runtime-receipt.js";
 import { resolveDataDir } from "../../src/cli/paths.js";
 import { processContext } from "../../src/cli/context.js";
 import { registerOwnerTools } from "./owner-tools.js";
@@ -89,8 +90,11 @@ function viaHub(tool: string, request: HubCall): Promise<ToolResult> {
     }
     const result = await hub.call(request);
     if (tool === "read_inbox") {
-      try { recordHubReceived(resolveDataDir(processContext(), undefined).path, result); }
-      catch { process.stderr.write("MIND: received-message mirror unavailable; hub result preserved.\n"); }
+      try {
+        recordHubReceived(resolveDataDir(processContext(), undefined).path, result);
+      } catch {
+        process.stderr.write("MIND: received-message mirror unavailable; hub result preserved.\n");
+      }
     }
     return result;
   });
@@ -526,9 +530,10 @@ registerBackgroundTools(server, process.env);
 registerRepoTools(server, process.env);
 registerPeerTaskLocalTools(server, process.env, async () => {
   if (hub === null) throw Error("Authenticated local hub required for peer decisions");
-  const self = (await hub.call({ op: "whoami" })) as { kind: string; ref: string };
+  const self = await hub.call<{ kind: string; ref: string }>({ op: "whoami" });
   if (self.kind !== "agent" && self.kind !== "human") throw Error("Invalid local decision actor");
   return { kind: self.kind, ref: self.ref };
 });
 
 await server.connect(new StdioServerTransport());
+writeRuntimeReceipt("mcp");

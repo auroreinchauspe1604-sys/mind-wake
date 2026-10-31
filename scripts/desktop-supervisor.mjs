@@ -66,13 +66,22 @@ export function startScheduled(m) {
   if (on.status !== 0) throw Error("Scheduled startup refused");
   const log = fs.openSync(path.join(m.dataDir, "daemon.log"), "a");
   try {
-    const daemon = spawn(m.node, [...args, "daemon", "run"], {
-      env,
-      cwd: m.repoDir,
-      detached: true,
-      windowsHide: true,
-      stdio: ["ignore", log, log],
-    });
+    const daemon = spawn(
+      m.node,
+      [
+        ...nodeArgs(m),
+        path.join(m.repoDir, "scripts/engine-supervisor.mjs"),
+        "--manifest",
+        path.join(m.dataDir, "installation/manifest.json"),
+      ],
+      {
+        env,
+        cwd: m.repoDir,
+        detached: true,
+        windowsHide: true,
+        stdio: ["ignore", log, log],
+      },
+    );
     daemon.on("error", (error) =>
       fs.appendFileSync(
         path.join(m.dataDir, "installation/desktop-supervisor.log"),

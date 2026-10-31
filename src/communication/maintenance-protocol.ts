@@ -47,6 +47,17 @@ export const observationSchema = z.strictObject({
   }),
   sourceRevision: revision.nullable(),
   installedRevision: revision.nullable(),
+  health: z
+    .strictObject({
+      sampledEvents: z.int().min(0),
+      failedEvents: z.int().min(0),
+      latestFailureAt: z.iso.datetime().nullable(),
+      lastSessionOutcome: z.enum(["completed", "failed", "interrupted", "other"]).nullable(),
+      ownerReceivedAt: z.iso.datetime().nullable(),
+      ownerEmittedAt: z.iso.datetime().nullable(),
+      ownerPublishedAt: z.iso.datetime().nullable(),
+    })
+    .optional(),
 });
 export type Observation = z.infer<typeof observationSchema>;
 export const resultSchema = z.strictObject({

@@ -8,7 +8,11 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
 function baseEnv() {
   return Object.fromEntries(
     Object.entries(process.env).filter(
-      ([k]) => !/(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|COOKIE)/i.test(k),
+      ([k]) =>
+        !/(KEY|TOKEN|SECRET|PASSW|CREDENTIAL|AUTH|COOKIE)/i.test(k) &&
+        !/^MIND_WAKE_(STARTUP_RECEIPT|STARTUP_INSTANCE|OWNED_RECEIPT|OWNED_INSTANCE|OWNED_ENTRY)$/.test(
+          k,
+        ),
     ),
   );
 }
@@ -87,20 +91,21 @@ export async function ensureHub(m) {
     fs.closeSync(stderr);
   }
 }
-export async function startLocal(manifestFile, role, options = {}) {
-  const m = { ...JSON.parse(fs.readFileSync(manifestFile, "utf8")), manifestFile };
-  if (m.version !== 1 || !["agent", "desktop"].includes(role))
-    throw Error("Installation ou rôle invalide.");
-  if (options.existingHubOnly === true) {
-    // Development relaunches may replace only the desktop while preserving its hub.
-    if (!(await reachable(m.pipe))) throw Error("Hub existant indisponible ; aucun hub lancé.");
-  } else {
-    await ensureHub(m);
-  }
+export function localRuntimeEnv(m, role, options = {}) {
+  const manifestFile = m.manifestFile;
   const keys = JSON.parse(
     fs.readFileSync(path.join(path.dirname(manifestFile), "keys.json"), "utf8"),
   );
-  const env = {
+  let peerTasks = process.env.MIND_WAKE_PEER_TASKS === "1";
+  try {
+    const file = path.join(m.dataDir, "peer-task-policy.json"),
+      stat = fs.lstatSync(file);
+    if (stat.isFile() && !stat.isSymbolicLink() && stat.nlink === 1 && stat.size <= 32768)
+      peerTasks = JSON.parse(fs.readFileSync(file, "utf8")).enabled === true;
+  } catch {
+    /* No implicit peer-task delegation without a configured local policy. */
+  }
+  return {
     ...baseEnv(),
     ...codexRuntimeEnv(m),
     MIND_MCP_HUB_PIPE: m.pipe,
@@ -109,6 +114,7 @@ export async function startLocal(manifestFile, role, options = {}) {
     MIND_WAKE_REPO_DIR: m.repoDir,
     MIND_WAKE_OWNER_MESSAGES: role === "agent" ? "1" : "0",
     MIND_WAKE_BACKGROUND_JOBS: role === "agent" ? "1" : "0",
+    MIND_WAKE_PEER_TASKS: role === "agent" && peerTasks ? "1" : "0",
     MIND_WAKE_NODE: m.node,
     MIND_WAKE_DESKTOP_SUPERVISED: options.supervised ? "1" : "0",
     ...(options.startupReceipt
@@ -119,6 +125,15 @@ export async function startLocal(manifestFile, role, options = {}) {
       : {}),
     ...desktopRuntimeEnv(m, role),
   };
+}
+export async function startLocal(manifestFile, role, options = {}) {
+  const m = { ...JSON.parse(fs.readFileSync(manifestFile, "utf8")), manifestFile };
+  if (m.version !== 1 || !["agent", "desktop"].includes(role))
+    throw Error("Installation ou rôle invalide.");
+  if (options.existingHubOnly === true) {
+    if (!(await reachable(m.pipe))) throw Error("Hub existant indisponible ; aucun hub lancé.");
+  } else await ensureHub(m);
+  const env = localRuntimeEnv(m, role, options);
   if (role === "desktop") {
     // Restart only this exact desktop executable. No daemon is stopped.
     const script =
@@ -151,20 +166,10 @@ export async function startLocal(manifestFile, role, options = {}) {
       });
     });
   }
-  const child = spawn(
-    m.node,
-    [
-      ...nodeArgs(m),
-      path.join(m.repoDir, "scripts/mcp-child.mjs"),
-      path.join(m.repoDir, "services/mcp/server-main.ts"),
-    ],
-    { cwd: m.repoDir, env, windowsHide: true, stdio: "inherit" },
-  );
-  child.once("error", () => {
-    process.stderr.write("Serveur MCP MIND indisponible.\n");
-    process.exitCode = 1;
-  });
-  child.once("exit", (code) => {
-    process.exitCode = code ?? 1;
+  const { runOwnedMcp } = await import("./owned-mcp.mjs");
+  return runOwnedMcp(manifestFile, async () => {
+    const latest = { ...JSON.parse(fs.readFileSync(manifestFile, "utf8")), manifestFile };
+    await ensureHub(latest);
+    return { m: latest, env: localRuntimeEnv(latest, "agent"), nodeArgs: nodeArgs(latest) };
   });
 }

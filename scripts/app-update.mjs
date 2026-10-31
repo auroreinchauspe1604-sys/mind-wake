@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { pathToFileURL } from "node:url";
+import { refreshManagedMcpLauncher } from "./managed-mcp-launcher.mjs";
 
 export const UPDATE_INTERVAL = 5 * 60 * 1000;
 export function development(m, env = process.env) {
@@ -103,6 +104,7 @@ export async function checkUpdate(
     if (JSON.stringify(JSON.parse(fs.readFileSync(file, "utf8"))) !== JSON.stringify(m))
       throw Error("Installation changed during update");
     write(path.join(dir, "previous-manifest.json"), m);
+    refreshManagedMcpLauncher(file, m.repoDir);
     write(file, { ...m, repoDir: target, desktopExe, revision });
     return report({ state: "installed", revision, restartRequired: true });
   } catch (error) {

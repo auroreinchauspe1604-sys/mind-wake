@@ -423,7 +423,7 @@ fn main() {
             app.manage(windows_startup::StartupMenu(startup));
             windows_startup::refresh(app.handle(), false);
             updates::start();
-            startup_receipt::write()?;
+            let _ = startup_receipt::write();
 
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {

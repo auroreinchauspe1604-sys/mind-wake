@@ -6,6 +6,7 @@ import { once } from "node:events";
 import { setTimeout as pause } from "node:timers/promises";
 import { checkUpdate } from "./app-update.mjs";
 import { privateFile, privateTarget } from "../services/shared-workspace/private-files.mjs";
+import { ownedComponents } from "./owned-runtime.mjs";
 const digest = (file) => createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const unknown = () => ({
   state: "unknown",
@@ -189,14 +190,53 @@ export async function superviseDesktopMaintenance(manifestFile, launch) {
   const owner = new OwnedDesktop(manifestFile, launch);
   const tree = new ProcessTreeSupervisor(path.join(m.dataDir, "maintenance-runtime"));
   const active = new Set();
+  const known = { daemon: false, mcp: false };
   const adapter = new LocalMaintenanceAdapter({
     dataDir: m.dataDir,
     repoDir: m.repoDir,
     manifestFile,
     lifecycle: {
-      actions: ["relaunch_app"],
-      observe: () => owner.observe(),
-      handoff: (a, s) => owner.handoff(a, s),
+      get actions() {
+        return [
+          "relaunch_app",
+          ...(known.daemon ? ["relaunch_engine"] : []),
+          ...(known.mcp ? ["relaunch_mcp"] : []),
+          "reinstall",
+        ];
+      },
+      observe: async () => {
+        const app = await owner.observe();
+        for (const role of ["daemon", "mcp"]) {
+          const result = await ownedComponents(manifestFile, role);
+          known[role] = result.members.length > 0;
+          app[role] = result.component;
+        }
+        return app;
+      },
+      handoff: async (action, signal) => {
+        if (action === "relaunch_app") return owner.handoff(action, signal);
+        const restart = async (role) => {
+          owner.guard();
+          signal.throwIfAborted();
+          const result = await ownedComponents(manifestFile, role, "restart", signal);
+          if (!result.members.length) throw Error("No owned runtime available");
+        };
+        if (action === "relaunch_engine") return restart("daemon");
+        if (action === "relaunch_mcp") return restart("mcp");
+        if (action !== "reinstall") throw Error("Unsupported handoff");
+        if (known.daemon) await restart("daemon");
+        if (known.mcp) {
+          const deadline = Date.now() + 30000;
+          while (!(await ownedComponents(manifestFile, "mcp")).members.length) {
+            signal.throwIfAborted();
+            owner.guard();
+            if (Date.now() > deadline) throw Error("MCP owner not ready");
+            await pause(100);
+          }
+          await restart("mcp");
+        }
+        await owner.handoff("relaunch_app", signal);
+      },
     },
     update: async (expectedRevision, signal) => {
       const latest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));

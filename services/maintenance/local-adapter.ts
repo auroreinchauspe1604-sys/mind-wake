@@ -5,6 +5,8 @@ import { realpathSync } from "node:fs";
 import { promisify } from "node:util";
 import { git } from "../../src/daemon/workspace-git-sync.js";
 import { StopFlag } from "../../src/runner/controls.js";
+import { readOwnerInboxHistory, readOwnerReceipts } from "../../src/communication/owner-inbox.js";
+import { readOwnerMessages } from "../../src/communication/owner-messages.js";
 import { wakeReader } from "../mcp/wake.js";
 import {
   observationSchema,
@@ -100,6 +102,43 @@ export class LocalMaintenanceAdapter implements MaintenanceAdapter {
       openSessions: number;
       daemon: { state: string };
     };
+    let health: Observation["health"];
+    try {
+      const recent = wakeReader({ MIND_WAKE_DATA_DIR: this.options.dataDir }).journal(
+        100,
+        null,
+      ) as { events: { type: string; at: string; metadata?: { outcome?: string } }[] };
+      const failures = recent.events.filter(
+        (e) =>
+          e.type === "error" ||
+          (e.type === "session_ended" &&
+            ["failed", "orphaned"].includes(e.metadata?.outcome ?? "")),
+      );
+      const inbox = readOwnerInboxHistory(this.options.dataDir).filter(
+        (m) => m.origin === undefined,
+      );
+      const receipts = readOwnerReceipts(this.options.dataDir);
+      const latest = inbox.at(-1);
+      const published = readOwnerMessages(this.options.dataDir)?.at(-1);
+      const session = (status as typeof status & { lastSession?: { outcome?: string } | null })
+        .lastSession?.outcome;
+      health = {
+        sampledEvents: recent.events.length,
+        failedEvents: failures.length,
+        latestFailureAt: failures.at(-1)?.at ?? null,
+        lastSessionOutcome:
+          session === undefined
+            ? null
+            : session === "completed" || session === "failed" || session === "interrupted"
+              ? session
+              : "other",
+        ownerReceivedAt: latest?.at ?? null,
+        ownerEmittedAt: latest ? (receipts[latest.id] ?? null) : null,
+        ownerPublishedAt: published?.createdAt ?? null,
+      };
+    } catch {
+      /* Health unavailable is omitted, never replaced by a healthy result. */
+    }
     return observationSchema.parse({
       at: new Date().toISOString(),
       wake: status.profile?.state ?? "unknown",
@@ -124,6 +163,7 @@ export class LocalMaintenanceAdapter implements MaintenanceAdapter {
           },
       sourceRevision,
       installedRevision,
+      ...(health === undefined ? {} : { health }),
     });
   }
   async execute(
@@ -174,7 +214,10 @@ export class LocalMaintenanceAdapter implements MaintenanceAdapter {
       // Updater fetches first, validates approved revision, builds immutable release, switches manifest.
       await this.options.update(expected, signal);
       signal.throwIfAborted();
-      await this.options.lifecycle.handoff("relaunch_app", signal);
+      await this.options.lifecycle.handoff(
+        this.options.lifecycle.actions.includes("reinstall") ? "reinstall" : "relaunch_app",
+        signal,
+      );
       return;
     }
     if (!this.options.lifecycle?.actions.includes(r.action)) throw Error("Unowned lifecycle");

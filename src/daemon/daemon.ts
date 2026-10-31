@@ -1,4 +1,5 @@
 import { KeyboardContextCollector } from "./keyboard-context.js";
+import { writeRuntimeReceipt } from "../communication/runtime-receipt.js";
 import { collectAgentScreenshot } from "./agent-screenshot-policy.js";
 import {
   captureWakeScreenshot,
@@ -514,6 +515,7 @@ export class WakeDaemon implements SessionLauncher {
       endedAt: null,
       endReason: null,
     });
+    writeRuntimeReceipt('daemon');
     uow.journal.append(
       prepareJournalEvent({
         type: "daemon_started",

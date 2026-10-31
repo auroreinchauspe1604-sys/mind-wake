@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+// This integration suite launches many real Windows Job Objects and Git processes.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 import { activateWorkspace, githubUrl, workspaceConfig } from "./workspace-config.js";
 import { workspaceDirFor } from "./paths.js";
 import {
@@ -82,7 +84,8 @@ it("uses the existing workspace by default and persists a changed folder until n
     }),
   ).rejects.toThrow();
 });
-it("pulls a real remote update after five minutes and persists the next due time through restart", async () => {
+it("pulls a real remote update after one minute and persists the next due time through restart", async () => {
+  expect(WORKSPACE_SYNC_INTERVAL).toBe(60_000);
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-31T00:00:00Z"));
   await sync.tick();
@@ -225,7 +228,7 @@ it("pushes only the explicit upstream with followTags, mirror and hostile pushur
   expect(workspaceSyncStatus(dir).state.status).toBe("ok");
   expect(await git(remote, ["for-each-ref", "--format=%(refname)"])).toBe("refs/heads/main");
 });
-it("retries a transient loopback connection failure only after five minutes", async () => {
+it("retries a transient loopback connection failure only after one minute", async () => {
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(new Date("2026-10-31T00:00:00Z"));
   const local = pathToFileURL(remote).href;

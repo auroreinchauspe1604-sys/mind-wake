@@ -144,3 +144,7 @@ if (process.env["MIND_WAKE_MAINTENANCE"] === "1") {
   registerMaintenanceTools(server, hub);
 }
 await server.connect(new StdioServerTransport());
+if (process.env["MIND_WAKE_OWNED_RECEIPT"]) {
+  const { writeRuntimeReceipt } = await import("../../src/communication/runtime-receipt.js");
+  writeRuntimeReceipt("mcp");
+}
