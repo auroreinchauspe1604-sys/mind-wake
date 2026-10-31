@@ -24,6 +24,12 @@ it("exposes direct repo tools over the real MCP process and refuses an invented 
   const listed = await client.call("list_repo_sessions");
   expect(listed.isError).toBe(false);
   expect(listed.data["sessions"]).toEqual([]);
+  const interview = await client.call("interview", {
+    phrase: "Cartographier les missions actuelles",
+    idempotency_key: "empty-interview-batch",
+  });
+  expect(interview.isError).toBe(true);
+  expect(interview.data["error"]).toContain("No authorized local session");
   const refused = await client.call("send_repo_request", {
     target: "claude:invented",
     topic: "Question",

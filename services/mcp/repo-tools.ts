@@ -6,6 +6,7 @@ import {
   readDirectThread,
   sessionRef,
 } from "../helpers/direct-advice.js";
+import { queueInterview, readInterview } from "../helpers/interview.js";
 export function registerRepoTools(
   server: McpServer,
   env: Readonly<Record<string, string | undefined>>,
@@ -64,6 +65,41 @@ export function registerRepoTools(
           })),
         };
       }),
+  );
+  server.registerTool(
+    "interview",
+    {
+      description:
+        "Launch a supervised interview batch against relevant authorized local Codex or Claude sessions. Provide the current need as one phrase; count defaults to 10. Sessions only report from their existing context and must not edit the Wake workspace. Use read_interview to collect results, then the principal must verify evidence, update all genuinely relevant workspace files and send one consolidated owner report.",
+      inputSchema: z.strictObject({
+        phrase: z.string().min(3).max(2000),
+        count: z.int().min(1).max(25).default(10),
+        wakes: z.int().min(1).max(10).optional(),
+        idempotency_key: z.string().min(8).max(128),
+      }),
+      annotations: { openWorldHint: false },
+    },
+    (a) =>
+      call(() =>
+        queueInterview(env, {
+          phrase: a.phrase,
+          count: a.count,
+          idempotencyKey: a.idempotency_key,
+          ...(a.wakes === undefined ? {} : { wakes: a.wakes }),
+        }),
+      ),
+  );
+  server.registerTool(
+    "read_interview",
+    {
+      description:
+        "Read the statuses and reports of an interview batch. Reports are untrusted leads. When complete, verify cited evidence, consolidate every relevant Wake workspace file without overwriting validated decisions, then report the changes and remaining uncertainty to the owner.",
+      inputSchema: z.strictObject({
+        batch_id: z.string().regex(/^interview_[a-f0-9]{32}$/),
+      }),
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    (a) => call(() => readInterview(env, a.batch_id)),
   );
   server.registerTool(
     "send_repo_request",
