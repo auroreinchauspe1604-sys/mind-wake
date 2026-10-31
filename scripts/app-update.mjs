@@ -27,7 +27,16 @@ export function updateStatus(file) {
   }
   return { ...result, development: development(m) };
 }
-export async function checkUpdate(file, { run = command } = {}) {
+export async function checkUpdate(
+  file,
+  { run: runner = command, expectedRevision, beforeStep = () => {} } = {},
+) {
+  // Maintenance callers supply a supervisor-owned cancellable runner and a local
+  // authorization/stop guard. Existing desktop callers retain their behavior.
+  const run = async (...args) => {
+    await beforeStep();
+    return runner(...args);
+  };
   const m = JSON.parse(fs.readFileSync(file, "utf8"));
   if (development(m)) return { state: "disabled", development: true };
   const dir = path.dirname(file),
@@ -65,6 +74,8 @@ export async function checkUpdate(file, { run = command } = {}) {
     );
     const revision = (await run("git", ["rev-parse", "refs/heads/wake-update"], cache, log)).trim();
     if (!/^[a-f0-9]{40,64}$/.test(revision)) throw Error("Invalid revision");
+    if (expectedRevision !== undefined && revision !== expectedRevision)
+      throw Error("Fetched revision differs from locally approved release");
     if (m.revision === revision) return report({ state: "current", revision });
     report({ state: "building", revision });
     const releases = path.join(dir, "releases");
@@ -88,6 +99,7 @@ export async function checkUpdate(file, { run = command } = {}) {
     if (!fs.existsSync(desktopExe) || !fs.existsSync(path.join(target, "dist/cli/main.js")))
       throw Error("Incomplete build");
     // Refuse to overwrite a concurrent installation change.
+    await beforeStep();
     if (JSON.stringify(JSON.parse(fs.readFileSync(file, "utf8"))) !== JSON.stringify(m))
       throw Error("Installation changed during update");
     write(path.join(dir, "previous-manifest.json"), m);

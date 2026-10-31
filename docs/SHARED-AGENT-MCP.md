@@ -1,5 +1,9 @@
 # Messages partages : installation depuis le clone GitHub
 
+Extension de maintenance désactivée par défaut : voir
+[REMOTE-MAINTENANCE.md](REMOTE-MAINTENANCE.md). Le relais typé optionnel ne transforme
+aucun message en commande et n'accorde aucun droit sur le poste cible.
+
 Depuis le clone complet MIND Wake et ses dependances installees (npm ci si necessaire, incluant TypeScript), Node **^24.17.0 ou ^26.13.0** :
 
 ```powershell

@@ -9,6 +9,7 @@ mod cli;
 mod quick_input;
 mod windows_startup;
 mod updates;
+mod startup_receipt;
 mod documents;
 mod conversation_images;
 mod external_urls;
@@ -422,6 +423,7 @@ fn main() {
             app.manage(windows_startup::StartupMenu(startup));
             windows_startup::refresh(app.handle(), false);
             updates::start();
+            startup_receipt::write()?;
 
             let handle = app.handle().clone();
             std::thread::spawn(move || loop {

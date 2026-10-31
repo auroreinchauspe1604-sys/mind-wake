@@ -4,6 +4,8 @@ import { digest } from "../advice/conversation/capability.js";
 import { loadHubConfig } from "./config.js";
 import { Hub } from "./hub.js";
 import { serveSharedHub } from "./shared-https.js";
+import { MaintenanceRelay } from "../maintenance/relay.js";
+import { join } from "node:path";
 
 const { values } = parseArgs({
   options: {
@@ -14,6 +16,7 @@ const { values } = parseArgs({
     host: { type: "string", default: "127.0.0.1" },
     port: { type: "string", default: "0" },
     "pilot-human-route": { type: "boolean", default: false },
+    "maintenance-relay": { type: "boolean", default: false },
   },
 });
 const { config, dir, cert, key } = values;
@@ -35,6 +38,9 @@ if (
   );
 mkdirSync(dir, { recursive: true });
 const hub = new Hub(settings, dir);
+const maintenance = values["maintenance-relay"]
+  ? new MaintenanceRelay(join(dir, "maintenance.sqlite"))
+  : undefined;
 // Re-read administrative config on every call: removal/revocation is immediate.
 // Adding/rotating identities requires restart, so the Hub identity table stays authoritative.
 const served = serveSharedHub(
@@ -48,12 +54,14 @@ const served = serveSharedHub(
         settings.parties.some((original) => JSON.stringify(original) === JSON.stringify(p)),
     );
   },
+  maintenance,
 );
 const port = await served.listen(Number(values.port), values.host);
 process.stdout.write(`${JSON.stringify({ ready: true, port })}\n`);
 const shutdown = () => {
   void served.close().then(() => {
     hub.close();
+    maintenance?.close();
     process.exit(0);
   });
 };

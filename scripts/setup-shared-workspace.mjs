@@ -4,27 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { loadState } from "../services/shared-workspace/workspace.mjs";
+import { loadState, hash } from "../services/shared-workspace/workspace.mjs";
+import { privateFile, privateTarget } from "../services/shared-workspace/private-files.mjs";
+import { loadScopedCredential } from "../services/shared-workspace/scoped-client.mjs";
+export { privateFile, privateTarget } from "../services/shared-workspace/private-files.mjs";
 
-export function privateFile(value) {
-  if (!value || !path.isAbsolute(value)) throw new Error("private_file_required");
-  const target = fs.realpathSync.native(value);
-  if (!fs.statSync(target).isFile()) throw new Error("private_file_required");
-  privateTarget(target);
-  return target;
-}
-export function privateTarget(value) {
-  const target = path.join(
-    fs.realpathSync.native(path.dirname(path.resolve(value))),
-    path.basename(value),
-  );
-  for (let dir = path.dirname(target); ; dir = path.dirname(dir)) {
-    if (fs.existsSync(path.join(dir, ".git"))) throw new Error("private_file_inside_git");
-    if (dir === path.dirname(dir)) break;
-  }
-  return target;
-}
-export async function setupWorkspace({ role, state, credential, output }) {
+export async function setupWorkspace({ role, state, credential, output, baseConfig }) {
   const [major, minor] = process.versions.node.split(".").map(Number);
   if (!((major === 24 && minor >= 17) || (major === 26 && minor >= 13)))
     throw new Error("node_version");
@@ -34,6 +19,7 @@ export async function setupWorkspace({ role, state, credential, output }) {
   await import("zod");
   const file = privateFile(role === "local" ? state : credential);
   if (role === "local") loadState(file);
+  else if (role === "scoped") loadScopedCredential(file);
   else {
     const config = JSON.parse(fs.readFileSync(file, "utf8"));
     if (!/^[a-f0-9]{64}$/.test(config.token) || !config.capability || !config.participant)
@@ -55,11 +41,25 @@ export async function setupWorkspace({ role, state, credential, output }) {
     new URL(`../services/shared-workspace/mcp-${role}.mjs`, import.meta.url),
   );
   const fragment = `[mcp_servers.mind_workspace_${role}]\ncommand = ${JSON.stringify(process.execPath)}\nargs = ${JSON.stringify([launcher, file])}\n`;
-  fs.writeFileSync(output, fragment, { flag: "wx", mode: 0o600 });
+  let prefix = Buffer.alloc(0);
+  if (baseConfig) {
+    prefix = fs.readFileSync(privateFile(baseConfig));
+    // Conservative collision check also covers quoted TOML keys/subtables. Never replace a server.
+    if (prefix.toString("utf8").includes(`mind_workspace_${role}`))
+      throw new Error("mcp_server_already_present");
+    privateTarget(output); // A candidate may contain other servers' private configuration.
+  }
+  fs.writeFileSync(
+    output,
+    Buffer.concat([prefix, Buffer.from(`${baseConfig ? "\n\n" : ""}${fragment}`)]),
+    { flag: "wx", mode: 0o600 },
+  );
   return {
     role,
-    configFragment: path.resolve(output),
-    note: "Fragment only; no MCP configuration edited, permission granted, server started or wake enabled.",
+    ...(baseConfig
+      ? { configCandidate: path.resolve(output), baseSha256: hash(prefix) }
+      : { configFragment: path.resolve(output) }),
+    note: "Prepared file only; no live MCP configuration edited, permission granted, server started or wake enabled.",
   };
 }
 if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
@@ -70,9 +70,12 @@ if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === imp
         state: { type: "string" },
         credential: { type: "string" },
         output: { type: "string" },
+        "base-config": { type: "string" },
       },
     });
-    console.log(JSON.stringify(await setupWorkspace(values)));
+    console.log(
+      JSON.stringify(await setupWorkspace({ ...values, baseConfig: values["base-config"] })),
+    );
   } catch {
     console.error(
       "workspace_mcp_setup_refused (check role, absolute private files outside Git, fresh output, Node and clone dependencies)",

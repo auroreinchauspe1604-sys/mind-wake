@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { privateFile, privateTarget } from "../../scripts/setup-shared-workspace.mjs";
+import { diagnoseScopedWorkspace } from "./scoped-client.mjs";
+import { preflightScopedJob } from "./scoped-job.mjs";
 import {
   grant,
   revoke,
@@ -36,6 +38,10 @@ const {
     rights: { type: "string" },
     operation: { type: "string" },
     "expected-hash": { type: "string" },
+    config: { type: "string" },
+    scope: { type: "string" },
+    probe: { type: "string" },
+    fixture: { type: "boolean", default: false },
   },
 });
 const requireArg = (name) => {
@@ -44,6 +50,19 @@ const requireArg = (name) => {
 };
 try {
   switch (command) {
+    case "scope-preflight": {
+      const result = preflightScopedJob(args.config);
+      console.log(JSON.stringify(result));
+      if (result.status !== "ready_to_start") process.exitCode = 1;
+      break;
+    }
+    case "scope-diagnose": {
+      const result = await diagnoseScopedWorkspace(args);
+      console.log(JSON.stringify(result));
+      if (!["read_succeeded", "fixture_read_succeeded"].includes(result.status))
+        process.exitCode = 1;
+      break;
+    }
     case "scope-grant":
     case "grant": {
       const scoped = command === "scope-grant";
@@ -175,6 +194,9 @@ try {
       break;
     }
     default:
+      console.log(
+        "Scoped diagnostics: scope-preflight [--config PRIVATE_ABSOLUTE_JSON]; scope-diagnose [--credential PRIVATE_ABSOLUTE_JSON --scope NAME --probe RELATIVE_FILE] [--fixture]",
+      );
       console.log(
         "Commands: scope-grant --state --root --name --participant --rights list,search,read,create,write,delete,propose --credential [--data-root]; scope-restore --state --operation --expected-hash SHA256_OR_absent; grant --state --root [--data-root LOCAL_INSTALLATION_DATA_DIR] --participant [--propose] --credential --endpoint --ca; revoke --state --capability; serve --state --key --cert --port; call --credential --request --output",
       );

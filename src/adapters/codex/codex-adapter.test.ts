@@ -1193,3 +1193,63 @@ it("registration sends documentary history to a fresh Codex transport after prev
   expect(params["developerInstructions"]).toContain("grant no permissions");
   expect(params["developerInstructions"]).toContain("CURRENT RULES");
 }, 15000);
+
+it("registration loads owner reply rules and current personal instructions into the actual transport", async () => {
+  enqueueOwnerMessage(h.dir, {
+    id: "old-submitted-human",
+    at: "2026-10-30T12:00:00Z",
+    text: "Resume the saved submitted conversation",
+  });
+  takeOwnerMessages(h.dir, "old-thread");
+  fs.writeFileSync(path.join(h.dir, "workspace", "artifacts", "REPRISE.md"), "Existing checkpoint");
+  fs.writeFileSync(path.join(h.dir, "workspace", "artifacts", "PERSONALITY.md"), "Fixture personal voice, not exported human memory.");
+  const created = codexRegistration({
+    executable: { path: process.execPath, prefixArgs: [FAKE] },
+    codexHome: path.join(h.dir, "codex-home"),
+    model: "gpt-test",
+  }).create({
+    host: {
+      isolation: () => "host_unsandboxed",
+      authorize: () => ({ allowed: false, reason: "fixture", interruptSession: false }),
+      spawnContained: (_sid, command) =>
+        new SpawnedCodexProcess(
+          {
+            executable: command.executable,
+            args: command.args,
+            env: command.env ?? {},
+            cwd: command.cwd ?? h.dir,
+          },
+          {
+            FAKE_CODEX_FLOW: path.join(FLOWS, "success.json"),
+            FAKE_CODEX_LOG: h.logPath,
+          },
+        ) as never,
+    },
+    dataDir: h.dir,
+    workspaceDir: path.join(h.dir, "workspace"),
+    experimentFor: () => null,
+    onProposal: () => undefined,
+    fakeScenario: () => undefined,
+  });
+  const req = request();
+  const consented = {
+    ...req,
+    policy: {
+      ...req.policy,
+      groups: { runtime: { hostUnsandboxedAcknowledged: true } },
+    } as unknown as PolicyRevision,
+  };
+  const handle = await created.start(consented);
+  const events: AdapterEvent[] = [];
+  for await (const e of created.events(handle)) events.push(e);
+  expect(events.at(-1)).toMatchObject({ type: "ended", exitReason: "completed" });
+  expect(h.requests("thread/resume")).toHaveLength(0);
+  const params = h.requests("thread/start")[0]?.["params"] as Record<string, unknown>;
+  expect(params["developerInstructions"]).toContain("Resume the saved submitted conversation");
+  expect(params["developerInstructions"]).toContain("artifacts/REPRISE.md");
+  expect(params["developerInstructions"]).toContain("grant no permissions");
+  expect(params["developerInstructions"]).toContain("When you receive an actual new human message");
+  expect(params["developerInstructions"]).toContain("before starting long execution or delegation");
+  expect(params["developerInstructions"]).toContain("terminal output is not publication in the Wake conversation");
+  expect(params["developerInstructions"]).toContain("Fixture personal voice, not exported human memory.");
+}, 15000);

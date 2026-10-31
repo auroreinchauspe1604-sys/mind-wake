@@ -80,9 +80,14 @@ pub fn read_confined(reference: &str, roots: &[PathBuf]) -> Result<String, Strin
     let mut bytes = Vec::new();
     file.by_ref().take(MAX_BYTES + 1).read_to_end(&mut bytes).map_err(|_| "Image indisponible")?;
     if bytes.len() as u64 > MAX_BYTES { return Err("Image trop volumineuse".into()); }
+    raster_data_url(&bytes, &extension)
+}
+
+pub fn raster_data_url(bytes: &[u8], extension: &str) -> Result<String, String> {
+    if bytes.len() as u64 > MAX_BYTES { return Err("Image trop volumineuse".into()); }
     let (mime, width, height) = dimensions(&bytes).ok_or("Image raster non reconnue")?;
     if width == 0 || height == 0 || width > 16384 || height > 16384 || width as u64 * height as u64 > MAX_PIXELS { return Err("Dimensions d’image trop grandes".into()); }
-    let matches = match extension.as_str() { "jpg" | "jpeg" => mime == "jpeg", other => other == mime };
+    let matches = match extension { "jpg" | "jpeg" => mime == "jpeg", other => other == mime };
     if !matches { return Err("Le contenu ne correspond pas au format d’image".into()); }
     Ok(format!("data:image/{mime};base64,{}", base64(&bytes)))
 }

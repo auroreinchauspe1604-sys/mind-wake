@@ -127,7 +127,7 @@ loop ne préempte pas une opération fichier synchrone ; une terminaison forcée
 interrompre sa persistance. Les snapshots/intents et les limites de récupération
 décrites plus haut restent applicables. Aucune transaction distribuée n'est ajoutée.
 
-### Recette unique d'activation à deux postes (à exécuter après choix opérateur)
+### Recette unique cible → TLS privé → client natif → diagnostic
 
 Paramètres manquants : racine/nom/droits choisis, participant convenu, adresse IP
 privée **déjà joignable** du poste propriétaire, port réservé et certificat serveur
@@ -136,23 +136,43 @@ approuvée par le destinataire. Cette recette utilise directement cette liaison
 privée existante en HTTPS ; aucun tunnel, route ou firewall n'est créé par le helper.
 Sans cette adresse et ces fichiers TLS, la validation inter-postes reste ouverte.
 Les commandes ci-dessous sont une recette, pas une activation effectuée par ce lot.
+Le client et le preflight acceptent une IP littérale loopback, RFC1918 ou IPv6 ULA
+(pas de résolution DNS, URL publique, redirection ou TLS désactivé). Un transport
+privé absent donne `private_transport_required` ; une IP privée configurée mais
+non joignable donne `inaccessible` à la sonde. Le programme ne sait pas déterminer
+si la cause est une route, un pare-feu ou un service arrêté. Aucun scan n'est fait.
+
+Prérequis sur chaque poste : clone contenant ces fichiers et `package-lock.json`,
+Node 24.17+ dans la branche 24 ou 26.13+ dans la branche 26, dépendances installées
+par `npm.cmd ci` par l'opérateur. Les `.mjs` s'exécutent directement, sans build
+TypeScript/Cargo ni changement du moteur live. Le clone doit rester à son chemin
+après installation : le fragment MCP et le script job y font référence.
 
 Sur le propriétaire, définir `$private` hors Git et hors toutes les racines
 partagées, `$workspace` vers son espace Wake, `$root` vers la racine choisie et
 `$dataDir` vers les données de son installation. Placer `server-key.pem`,
 `server-cert.pem` et `ca.pem` dans `$private`, sous ACL du compte propriétaire.
 Fixer `$ownerIp` à l'IP convenue, `$port` au port réservé et `$participant` à
-l'identifiant convenu. Depuis le clone :
+l'identifiant convenu. Choisir aussi `$scope`, `$rights` et `$probe` : nom ASCII
+du scope, droits explicitement choisis, chemin relatif `/` d'un petit fichier
+texte existant autorisé à la lecture. Pour ce diagnostic, `list,read` suffisent ;
+aucun droit d'écriture n'est nécessaire. Ne pas créer un fichier sur la cible
+pour les besoins de la sonde. La sélection et le grant ci-dessous sont effectués
+sur la cible par son opérateur autorisé ; ce worker ne les exécute pas. Depuis le clone :
 
 ```powershell
 $state = Join-Path $private 'scopes.json'
 $credential = Join-Path $private 'recipient.json'
 $endpoint = "https://${ownerIp}:$port/v1/scoped-workspace"
-node services/shared-workspace/cli.mjs scope-grant --state $state --root $root --name projet --participant $participant --rights list,search,read,create,write,delete,propose --data-root $dataDir --credential $credential --endpoint $endpoint --ca (Join-Path $private 'ca.pem')
+node services/shared-workspace/cli.mjs scope-grant --state $state --root $root --name $scope --participant $participant --rights $rights --data-root $dataDir --credential $credential --endpoint $endpoint --ca (Join-Path $private 'ca.pem')
+if ($LASTEXITCODE -ne 0) { throw 'Grant local refuse ; ne pas continuer' }
 $config = Join-Path $private 'scoped-server.json'
 $json = @{stateFile=$state; keyFile=(Join-Path $private 'server-key.pem'); certFile=(Join-Path $private 'server-cert.pem'); host=$ownerIp; port=[int]$port} | ConvertTo-Json
 [IO.File]::WriteAllText($config, $json, [Text.UTF8Encoding]::new($false))
+node services/shared-workspace/cli.mjs scope-preflight --config $config
+if ($LASTEXITCODE -ne 0) { throw 'Preflight cible refuse ; aucun service demarre' }
 node scripts/setup-scoped-workspace-job.mjs --workspace $workspace --config $config
+if ($LASTEXITCODE -ne 0) { throw 'Preparation job refusee' }
 ```
 
 Soumettre ensuite via le MCP Wake local :
@@ -169,14 +189,76 @@ uniquement `caFile` dans sa copie du credential au chemin absolu local de `ca.pe
 Ne jamais transmettre état, snapshots, config serveur ou clé privée. Depuis son clone :
 
 ```powershell
-node scripts/setup-shared-workspace.mjs --role scoped --credential $credential --output (Join-Path $private 'workspace-scoped.toml')
+$fragment = Join-Path $private 'workspace-scoped.toml'
+node scripts/setup-shared-workspace.mjs --role scoped --credential $credential --output $fragment
+if ($LASTEXITCODE -ne 0) { throw 'Configuration client refusee' }
+node services/shared-workspace/cli.mjs scope-diagnose --credential $credential --scope $scope --probe $probe
+if ($LASTEXITCODE -ne 0) { throw 'Sonde refusee ; examiner statut/etape/raison JSON' }
 ```
 
-Ajouter ce fragment au runtime MCP autorisé en préservant ses autres serveurs.
-Le helper n'édite pas sa configuration : il prépare un TOML avec chemin du client
-et du credential, sans token en clair. Ne pas ajouter le rôle local au destinataire.
-Vérifier découverte des sept outils, lecture/recherche, mutation autorisée puis
-révocation locale et arrêt du job ; vérifier le refus côté autre poste. Aucun
+La sonde utilise `callScopedWorkspace`, le même client HTTPS que le MCP. Elle fait
+`list` à la racine puis `read` du seul fichier désigné, en exigeant le nom de scope
+sur les deux requêtes. La réponse contient le scope renvoyé par le serveur, le
+participant, la capability, le certificat SHA-256 de la connexion TLS vérifiée,
+le nombre d'entrées et le hash/octet de la sonde. Aucun contenu ni nom de fichier
+listé n'est journalisé. Ces données ne prouvent pas une identité physique Aurore.
+
+| Statut JSON              | Interprétation                                                                                                                             |
+| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `not_configured`         | Credential/CA absents ou invalides, mauvaise route, transport privé ou scope/sonde explicites manquants                                    |
+| `inaccessible`           | Connexion refusée/interrompue, réseau inaccessible ou délai dépassé                                                                        |
+| `tls_refused`            | Certificat non approuvé, nom incorrect ou autre refus TLS                                                                                  |
+| `auth_refused`           | Token/identité incorrects **ou** capability inactive/révoquée ; le serveur ne distingue pas ces causes                                     |
+| `scope_refused`          | Identité acceptée, mais scope ou droit list/read refusé                                                                                    |
+| `operation_refused`      | Lecture ou protocole refusé ; voir raison assainie et étape list/read                                                                      |
+| `read_succeeded`         | Liste et lecture vérifiées pour cette configuration uniquement ; `remoteAccessVerified:false` sans attestation du trajet entre deux postes |
+| `fixture_read_succeeded` | Option `--fixture` : preuve synthétique seulement, jamais un accès Aurore                                                                  |
+
+Les refus ont un exit code 1, les lectures réussies 0. Sans credential local,
+`scope-diagnose` ne fait aucune requête et renvoie `not_configured`.
+
+Pour le raccord natif, `$native` est le chemin absolu de la configuration TOML
+du runtime **choisi localement**. Préparer un candidat neuf hors Git :
+
+```powershell
+$candidate = Join-Path $private 'native-with-scoped.toml'
+$baseHash = (Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash
+node scripts/setup-shared-workspace.mjs --role scoped --credential $credential --base-config $native --output $candidate
+if ($LASTEXITCODE -ne 0) { throw 'Candidat refuse ; ne pas remplacer la config native' }
+```
+
+Le candidat conserve tous les octets de la config existante puis ajoute exactement
+le fragment. Toute occurrence du nom du serveur scoped existant est refusée par
+précaution (y compris un commentaire). Aucun fichier existant n'est écrasé ; le
+helper ne modifie ni la config live, ni les permissions, ni les autres serveurs.
+Le candidat peut contenir les secrets d'autres serveurs : conserver les mêmes ACL
+privées, ne pas l'envoyer ni le publier. Le fragment seul ne contient aucun token.
+
+Après revue du candidat, l'intégrateur autorisé peut l'installer (commandes non
+exécutées par ce lot), puis ouvrir une **nouvelle session** du runtime choisi :
+
+```powershell
+if ((Get-FileHash -LiteralPath $native -Algorithm SHA256).Hash -ne $baseHash) { throw 'Config modifiee depuis preparation ; regenerer le candidat' }
+$backup = Join-Path $private 'native-before-scoped.toml'
+if (Test-Path -LiteralPath $backup) { throw 'Choisir un backup neuf' }
+Copy-Item -LiteralPath $native -Destination $backup -ErrorAction Stop
+Copy-Item -LiteralPath $candidate -Destination $native -ErrorAction Stop
+```
+
+Vérifier dans cette nouvelle session les autres serveurs et les sept outils
+`workspace_list/search/read/create/write/delete/propose`, puis appeler
+`workspace_list {path:""}` et `workspace_read {path:$probe}`. La découverte ne
+prouve aucun droit d'écriture : chaque appel reste soumis au grant cible. Aucun
+rôle `local` ne doit être ajouté au destinataire. Rollback client : fermer cette
+session puis `Copy-Item -LiteralPath $backup -Destination $native -ErrorAction Stop`
+**si la config n'a pas changé entre-temps** ; sinon retirer seulement la section
+ajoutée après revue pour préserver les nouvelles modifications. Réouvrir une session.
+Supprimer un fragment/credential ne révoque pas les copies du token.
+
+Rollback cible : `revoke --state $state --capability IDENTIFIANT` sur la cible,
+puis `cancel_background_job` du job exact (ou Pause/Force-off). Vérifier le refus
+de la sonde et la fin du job. Supprimer le seul script préparé après arrêt si
+souhaité ; conserver l'état nécessaire à l'audit. Aucun
 reconnecteur automatique n'est installé ; un client encore ouvert après arrêt du
 serveur échoue et ne redémarre pas le serveur. Ne pas activer l'ancien `serve`
 manuel pour ce mode. Les interfaces desktop ne sont pas modifiées par ce lot.
@@ -187,7 +269,11 @@ manuel pour ce mode. Les interfaces desktop ne sont pas modifiées par ce lot.
 node --experimental-transform-types --disable-warning=ExperimentalWarning --import ./test/fixtures/store-ledger/ts-hooks.ts --test services/shared-workspace/transport.test.mjs services/shared-workspace/mcp.test.mjs services/shared-workspace/scoped.test.mjs services/shared-workspace/scoped-transport.test.mjs
 ```
 
-16 scénarios passent sous Windows/Node 24.17, sans garde réseau artificielle,
+La suite ajoute un diagnostic CLI sur fixture supervisée et un lancement MCP
+depuis le fragment réellement généré ; elle vérifie aussi le candidat natif
+additif, les statuts de refus et l'absence de contenu/secret dans ses sorties.
+Les résultats exécutés du lot client figurent dans `output/aurore-filesystem-client/verification.json`.
+Les essais tournent sous Windows/Node 24.17, sans garde réseau artificielle,
 avec certificats éphémères locaux et listeners loopback. La nouvelle suite importe
 les sources TypeScript du superviseur avec les hooks de test existants, sans build
 Cargo ni daemon réel redémarré. Elle lance deux vrais processus MCP stdio, un vrai

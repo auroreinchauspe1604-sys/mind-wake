@@ -6,6 +6,11 @@ Une voie optionnelle séparée, `shared-server-main.ts`/`shared-hub-main.ts`, pr
 
 ## Architecture
 
+La tranche opt-in de [maintenance distante](../../docs/REMOTE-MAINTENANCE.md)
+ajoute un relais typé au hub HTTPS existant et un contrôleur cible séparé des
+messages. Elle n'est pas activée par l'installation et ne branche pas encore les
+relances aux processus de production. Le diagnostic peut fonctionner sans modèle.
+
 ```
 client MCP (Claude Code, Codex, Gemini CLI…) ── stdio ── server-main.ts   (1 processus par client)
                                                               │ pipe nommé local + clé de liaison

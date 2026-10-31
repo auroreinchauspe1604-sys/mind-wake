@@ -1,6 +1,7 @@
 import { initProjects } from "./projects.js";
 import { initWorkspaceSync } from "./workspace-sync.js";
 import { initDocuments } from "./documents.js";
+import { bindChatDraft } from "./chat-draft.js";
 /**
  * Panneau « Que fait mon agent ? » et fils privés. Chaque lecture et chaque action passe
  * par une commande Rust qui exécute la CLI correspondante (`mind-wake … --json`,
@@ -694,11 +695,14 @@ async function refreshRecipient():Promise<void> {
   finally {recipientChecking=false;}
 }
 const recipientStorage=(()=>{try{return localStorage;}catch{return undefined;}})();
+const saveChatDraft=bindChatDraft(byId<HTMLTextAreaElement>('chat-text'),byId<HTMLSelectElement>('chat-recipient'),recipientStorage);
+window.addEventListener('beforeunload',saveChatDraft);
 const sendRemoteRecipient=recipientSender(invoke,()=>`ui-${crypto.randomUUID()}`,recipientStorage);
 async function sendToAgent(): Promise<void> {
   if (byId<HTMLSelectElement>("chat-recipient").value === "auroracle") {
     try {byId("chat-status").textContent=await sendRemoteRecipient(byId<HTMLTextAreaElement>("chat-text"));void refreshChat();}
     catch(error){byId("chat-status").textContent=message(error);}
+    saveChatDraft();
     return;
   }
   const field = byId<HTMLTextAreaElement>("chat-text");
@@ -707,6 +711,7 @@ async function sendToAgent(): Promise<void> {
   const key = `ui-${crypto.randomUUID()}`;
   const bubble = outgoingBubble(key, text);
   field.value = "";
+  saveChatDraft();
   field.focus();
   await transmitChat(key, text, bubble);
 }

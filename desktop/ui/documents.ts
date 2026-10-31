@@ -1,6 +1,7 @@
 import { collectionKey, documentLabel, libraryLabel, modificationAge, visibleDocuments, type LibraryEntry } from './document-library.js';
 import { loadDocumentImages, sanitizeDocument } from './document-images.js';
-import { DocumentScopeState, documentScopeLabel, localDocumentScope } from './document-scope.js';
+import { DocumentScopeState, documentScopeLabel } from './document-scope.js';
+import { atelierUrl, createAtelierFrame } from './local-atelier.js';
 type Invoke = (command: string, args: Record<string, unknown>) => Promise<unknown>;
 export function initialDocument(entries: readonly LibraryEntry[], saved?: string): string | undefined {
   if (saved) return saved;
@@ -80,6 +81,8 @@ export function markdownHtml(source: string): string {
 export function initDocuments(invoke: Invoke): void {
   const byId=<T extends HTMLElement>(id:string):T=>document.getElementById(id) as T;
   const host=byId<HTMLElement>('view-documents'),frame=byId<HTMLIFrameElement>('document-frame');
+  const appFrame=createAtelierFrame();frame.parentElement?.append(appFrame);
+  const closeApp=():void=>{appFrame.hidden=true;appFrame.removeAttribute('src');frame.hidden=false;};
   const scope=byId<HTMLSelectElement>('document-scope'),collection=byId<HTMLSelectElement>('document-collection');
   let savedScope:unknown=scope.value;
   try{savedScope=localStorage.getItem('mind-wake.reader-scope')??scope.value;}catch{/* Optional storage. */}
@@ -92,7 +95,8 @@ export function initDocuments(invoke: Invoke): void {
   const back=byId<HTMLButtonElement>('document-back'),forward=byId<HTMLButtonElement>('document-forward');
   const previous=byId<HTMLButtonElement>('document-previous'),next=byId<HTMLButtonElement>('document-next');
   let entries:LibraryEntry[]=[],current='',documentScope='agent',generation=0,catalogGeneration=0,pendingOpen=false;
-  let renderedRelative='',renderedScope='agent';
+  let renderedRelative='',renderedScope='agent',cloneVersion:string|undefined;
+  const scopeHistories=new Map<string,{history:string[];position:number}>();
   let history:string[]=[],position=-1,truncated=false;
   type ContextFile={scope:'agent'|'project';relative:string;name:string};
   let contextQueue:ContextFile[]=[],contextMode=false;
@@ -115,14 +119,14 @@ export function initDocuments(invoke: Invoke): void {
   const feedback=(error:unknown):void=>{status.textContent='Lecture indisponible : '+String(error);};
   const shown=():LibraryEntry[]=>visibleDocuments(entries,collection.value,search.value,format.value);
   const remember=():void=>{
-    if(localDocumentScope(renderedScope)&&renderedRelative&&frame.contentWindow)positions[renderedScope+':'+renderedRelative]=frame.contentWindow.scrollY;
+    if(renderedRelative&&frame.contentWindow)positions[renderedScope+':'+renderedRelative]=frame.contentWindow.scrollY;
     try{localStorage.setItem('mind-wake.reader-positions',JSON.stringify(positions));if(current)localStorage.setItem('mind-wake.reader-current.'+documentScope,current);}catch{/* Keep working without storage. */}
   };
   function setLibrary(open:boolean):void{
     library.hidden=!open;host.dataset['library']=open?'open':'closed';explore.setAttribute('aria-expanded',String(open));
   }
   function pagination():void{
-    const list=scopeState.local===null?[]:contextMode?contextQueue:shown().map(entry=>({...entry,scope:scope.value}));
+    const list=contextMode&&scopeState.local!==null?contextQueue:shown().map(entry=>({...entry,scope:scope.value}));
     const index=list.findIndex(e=>e.relative===current&&e.scope===scope.value);
     const before=index>0?list[index-1]:undefined,after=index<0?list[0]:list[index+1];
     previous.dataset['scope']=before?.scope??scope.value;next.dataset['scope']=after?.scope??scope.value;
@@ -145,8 +149,8 @@ export function initDocuments(invoke: Invoke): void {
   setInterval(refreshFileAges,60_000);
   function renderFiles():void{
     const list=shown();files.replaceChildren();
-    byId('document-count').textContent=scopeState.local===null?'En attente du dépôt':list.length+' document'+(list.length===1?'':'s')+' · plus récents en premier'+(truncated?' · catalogue partiel':'');
-    if(!list.length){const empty=document.createElement('p');empty.className='reader-empty';empty.textContent=scopeState.local===null?'Son dépôt n’est pas encore connecté.':'Aucun document ne correspond. Essayez un autre projet ou une autre recherche.';files.append(empty);}
+    byId('document-count').textContent=list.length+' document'+(list.length===1?'':'s')+(scopeState.current==='aurore'?' · catalogue Git':' · plus récents en premier')+(truncated?' · catalogue partiel':'');
+    if(!list.length){const empty=document.createElement('p');empty.className='reader-empty';empty.textContent='Aucun document affiché. Consultez l’état de lecture ou modifiez les filtres.';files.append(empty);}
     for(const entry of list){
       const button=document.createElement('button');button.type='button';button.className='reader-file';button.title=entry.relative;
       button.setAttribute('aria-current',String(entry.relative===current));
@@ -171,36 +175,53 @@ export function initDocuments(invoke: Invoke): void {
     const separator2=document.createElement('span');separator2.textContent='›';location.append(separator2,leaf);
   }
   async function loadCatalog(restore=false):Promise<void>{
-    const ticket=++catalogGeneration,scopeTicket=scopeState.capture(),targetScope=scopeState.local;
-    if(targetScope===null){showPendingScope();return;}
+    generation++;pendingOpen=false;
+    const ticket=++catalogGeneration,scopeTicket=scopeState.capture(),targetScope=scopeState.current;
     status.textContent='Ouverture de la bibliothèque…';
     try{
-      const data=await invoke('document_browse',{scope:targetScope,relative:'',read:false,recursive:true}) as {entries:LibraryEntry[];truncated?:boolean};
+      const data=await invoke('document_browse',{scope:targetScope,relative:'',read:false,recursive:true}) as {entries:LibraryEntry[];truncated?:boolean;state?:string;version?:string};
       if(ticket!==catalogGeneration||!scopeState.accepts(scopeTicket))return;
+      if(targetScope==='aurore'&&data.state!=='available'){
+        showCloneState(data.state==='empty'&&data.truncated?'partial':data.state);return;
+      }
+      cloneVersion=targetScope==='aurore'?data.version:undefined;
       entries=data.entries;truncated=Boolean(data.truncated);
-      window.dispatchEvent(new CustomEvent('wake-document-catalog',{detail:{scope:targetScope,entries,truncated}}));
+      // Aurore names must not enter the owner's conversation catalog/context queue.
+      if(targetScope!=='aurore')window.dispatchEvent(new CustomEvent('wake-document-catalog',{detail:{scope:targetScope,entries,truncated}}));
       const selected=collection.value;collection.replaceChildren(new Option('Tous les projets',''));
       for(const key of [...new Set(entries.map(e=>collectionKey(e.relative)))].sort((a,b)=>libraryLabel(a).localeCompare(libraryLabel(b))))collection.add(new Option(libraryLabel(key),key));
       if([...collection.options].some(o=>o.value===selected))collection.value=selected;
-      renderFiles();breadcrumbs();status.textContent=truncated?'Une partie du catalogue est affichée.':'';
+      renderFiles();breadcrumbs();status.textContent=truncated?'Une partie du catalogue est affichée.':targetScope==='aurore'?'Clone lié · '+(cloneVersion??'version inconnue')+' · lecture seule':'';
       if(restore&&!current&&!pendingOpen){
         let saved='';try{saved=localStorage.getItem(stateKey())??'';}catch{/* No saved document. */}
         const initial=entries.find(e=>e.relative===saved)??entries.find(e=>e.relative==='artifacts/projets.html')??shown()[0];
         if(initial)await open(initial.relative);else setLibrary(true);
       }
-    }catch(error){if(ticket===catalogGeneration&&scopeState.accepts(scopeTicket))feedback(error);}
+    }catch(error){if(ticket===catalogGeneration&&scopeState.accepts(scopeTicket)){if(targetScope==='aurore')showCloneState('unavailable');else feedback(error);}}
   }
   async function open(relative:string,record=true,anchor='',historyIndex?:number):Promise<void>{
-    const targetScope=scopeState.local;if(targetScope===null){showPendingScope();return;}
+    const targetScope=scopeState.current;
     remember();const ticket=++generation,scopeTicket=scopeState.capture();pendingOpen=true;status.textContent='Ouverture du document…';
     try{
-      const data=await invoke('document_browse',{scope:targetScope,relative,read:true}) as {text:string;format:string};
+      const data=await invoke('document_browse',{scope:targetScope,relative,read:true,...(targetScope==='aurore'?{version:cloneVersion}:{})}) as {text:string;format:string;localApp?:unknown;state?:string};
       if(ticket!==generation||!scopeState.accepts(scopeTicket))return;
+      if(targetScope==='aurore'&&data.state!=='available'){showCloneState(data.state);return;}
       current=relative;documentScope=targetScope;
       if(record){history=history.slice(0,position+1);if(history.at(-1)!==relative)history.push(relative);position=history.length-1;}
       else if(historyIndex!==undefined)position=historyIndex;
       const key=collectionKey(relative);
       if(collection.value&&collection.value!==key)collection.value='';
+      const appUrl=atelierUrl(targetScope,relative,data.localApp);
+      if(appUrl){
+        frame.onload=null;renderedRelative='';frame.hidden=true;appFrame.hidden=false;
+        appFrame.src=appUrl;title.textContent='Atelier DJ · création et mix';
+        outline.replaceChildren(new Option('Application interactive',''));outline.disabled=true;
+        breadcrumbs();renderFiles();setLibrary(false);
+        try{localStorage.setItem(stateKey(),current);}catch{/* Optional storage. */}
+        status.textContent='Atelier DJ local · commandes et audio sur action explicite. Si le service supervisé est arrêté, la page est indisponible ; Actualiser après reprise.';
+        return;
+      }
+      closeApp();
       const parsed=parseDocument(data.text,data.format);
       const images=sanitizeDocument(parsed,relative);
       const style=document.createElement('style');style.textContent='html{color-scheme:light;scroll-padding-top:20px}body{font:15px/1.75 system-ui;margin:28px;color:#203f34;overflow-wrap:anywhere}pre{overflow:auto;padding:16px;background:#8882}table{border-collapse:collapse}td,th{border:1px solid #8886;padding:8px}a{color:#238967}img{max-width:100%}';parsed.head.prepend(style);
@@ -208,7 +229,9 @@ export function initDocuments(invoke: Invoke): void {
       frame.onload=()=>{
         if(ticket!==generation||!scopeState.accepts(scopeTicket))return;
         const doc=frame.contentDocument;if(!doc)return;
-        void loadDocumentImages(images,doc,targetScope,invoke,()=>ticket===generation&&targetScope===scope.value&&frame.contentDocument===doc);
+        const version=cloneVersion;
+        const imageInvoke:Invoke=(command,args)=>invoke(command,{...args,...(targetScope==='aurore'?{version}:{})});
+        void loadDocumentImages(images,doc,targetScope,imageInvoke,()=>ticket===generation&&scopeState.accepts(scopeTicket)&&frame.contentDocument===doc);
         renderedRelative=relative;renderedScope=targetScope;
         outline.replaceChildren(new Option('Aller à une section…',''));
         const usedHeadingIds=new Set<string>();
@@ -235,8 +258,8 @@ export function initDocuments(invoke: Invoke): void {
       };
       frame.srcdoc='<!doctype html>'+parsed.documentElement.outerHTML;
       breadcrumbs();renderFiles();try{localStorage.setItem(stateKey(),current);}catch{/* Storage is optional. */}
-      status.textContent=data.format==='html'?'Page HTML · lecture seule':data.format==='text'?'Texte brut · lecture seule':'';
-    }catch(error){if(ticket===generation&&scopeState.accepts(scopeTicket))feedback(error);}
+      status.textContent=targetScope==='aurore'?'Clone lié · '+(cloneVersion??'version inconnue')+' · lecture seule':data.format==='html'?'Page HTML · lecture seule':data.format==='text'?'Texte brut · lecture seule':'';
+    }catch(error){if(ticket===generation&&scopeState.accepts(scopeTicket)){if(targetScope==='aurore')showCloneState('unavailable');else feedback(error);}}
     finally{if(ticket===generation)pendingOpen=false;}
   }
   explore.addEventListener('click',()=>setLibrary(Boolean(library.hidden)));
@@ -245,22 +268,25 @@ export function initDocuments(invoke: Invoke): void {
   outline.addEventListener('change',()=>{if(outline.value)frame.contentDocument?.getElementById(outline.value)?.scrollIntoView();});
   back.addEventListener('click',()=>{if(position>0){const index=position-1;void open(history[index]??'',false,'',index);}});
   forward.addEventListener('click',()=>{if(position+1<history.length){const index=position+1;void open(history[index]??'',false,'',index);}});
-  const pageClick=(button:HTMLButtonElement):void=>{const relative=button.dataset['relative'];if(!relative)return;if(contextMode)requestFile({scope:button.dataset['scope']==='project'?'project':'agent',relative,name:relative.split('/').at(-1)??relative});else void open(relative);};
+  const pageClick=(button:HTMLButtonElement):void=>{const relative=button.dataset['relative'];if(!relative)return;if(contextMode&&scopeState.local!==null)requestFile({scope:button.dataset['scope']==='project'?'project':'agent',relative,name:relative.split('/').at(-1)??relative});else void open(relative);};
   previous.addEventListener('click',()=>pageClick(previous));
   next.addEventListener('click',()=>pageClick(next));
   byId('document-latest').addEventListener('click',()=>{contextMode=false;renderQueue();const first=shown()[0];if(first)void open(first.relative);});
-  function showPendingScope():void{
-    title.textContent='Atelier d’Aurore';status.textContent='Pas encore connecté à son dépôt.';
+  function showCloneState(state:unknown):void{
+    generation++;pendingOpen=false;current='';renderedRelative='';entries=[];history=[];position=-1;
+    frame.onload=null;closeApp();frame.srcdoc='';outline.replaceChildren(new Option('Sommaire indisponible',''));outline.disabled=true;
+    collection.replaceChildren(new Option('Tous les projets',''));
+    title.textContent='Atelier d’Aurore';
+    status.textContent=state==='not-configured'?'Liaison fichiers non configurée.':state==='invalid-origin'?'Origine du clone invalide.':state==='empty'?'Clone lié sans document lisible.':state==='partial'?'Catalogue du clone partiel · aucun document affiché.':state==='version-changed'?'Version du clone modifiée · actualisez le catalogue.':'Lecture du clone indisponible.';
     breadcrumbs();renderFiles();renderQueue();setLibrary(true);
   }
   function changeScope(value:unknown,restore:boolean,keepContext=false):void{
-    remember();scopeState.select(value);scope.value=scopeState.current;
+    remember();scopeHistories.set(scopeState.current,{history:[...history],position});scopeState.select(value);scope.value=scopeState.current;
     generation++;catalogGeneration++;pendingOpen=false;current='';documentScope=scopeState.current;renderedRelative='';
-    entries=[];history=[];position=-1;truncated=false;contextMode=keepContext;collection.replaceChildren(new Option('Tous les projets',''));search.value='';
-    frame.onload=null;frame.srcdoc='';outline.replaceChildren(new Option('Sommaire indisponible',''));outline.disabled=true;
-    const pending=scopeState.local===null;
-    collection.disabled=pending;search.disabled=pending;format.disabled=pending;
-    byId<HTMLButtonElement>('document-latest').disabled=pending;byId<HTMLButtonElement>('document-refresh').disabled=pending;
+    entries=[];history=[...(scopeHistories.get(scopeState.current)?.history??[])];position=scopeHistories.get(scopeState.current)?.position??-1;cloneVersion=undefined;truncated=false;contextMode=keepContext;collection.replaceChildren(new Option('Tous les projets',''));search.value='';
+    frame.onload=null;closeApp();frame.srcdoc='';outline.replaceChildren(new Option('Sommaire indisponible',''));outline.disabled=true;
+    collection.disabled=false;search.disabled=false;format.disabled=false;
+    byId<HTMLButtonElement>('document-latest').disabled=false;byId<HTMLButtonElement>('document-refresh').disabled=false;
     title.textContent=documentScopeLabel(scopeState.current);renderFiles();breadcrumbs();renderQueue();
     try{localStorage.setItem('mind-wake.reader-scope',scopeState.current);}catch{/* Optional storage. */}
     void loadCatalog(restore);

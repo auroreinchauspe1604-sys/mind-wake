@@ -208,6 +208,9 @@ describe.runIf(WINDOWS)("enregistrement Claude : daemon en mode réel, faux CLI"
       const promptIndex = sessions[0]!.argv.indexOf("--append-system-prompt-file");
       const runtimePrompt = fs.readFileSync(sessions[0]!.argv[promptIndex + 1]!, "utf8");
       expect(runtimePrompt).toContain("You are an agent of MIND.");
+      expect(runtimePrompt).toContain("When you receive an actual new human message");
+      expect(runtimePrompt).toContain("before starting long execution or delegation");
+      expect(runtimePrompt).toContain("terminal output is not publication in the Wake conversation");
       expect(runtimePrompt).toContain(
         "Stay actively engaged throughout the time and compute allocated to this wake.",
       );

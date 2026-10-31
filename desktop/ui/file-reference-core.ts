@@ -1,3 +1,4 @@
+import { messageLinks } from './message-links.js';
 /** Pure matching against known local documents; no filesystem or DOM access. */
 export type FileScope = 'agent' | 'project';
 export interface KnownFile { scope:FileScope; relative:string; name:string }
@@ -61,7 +62,7 @@ function fencedSpans(text:string):Span[]{
 /** Offsets are JavaScript UTF-16 offsets, suitable for splitting a DOM text node. */
 export function findFileMentions(text:string,catalogs:readonly FileCatalog[]):FileMention[]{
   const index=indexFor(catalogs);if(!index.matcher||!text)return [];
-  const protectedSpans=fencedSpans(text),mentions:FileMention[]=[];
+  const protectedSpans=[...fencedSpans(text),...messageLinks(text).map(({start,end})=>({start,end}))],mentions:FileMention[]=[];
   const protect=(regex:RegExp):void=>{for(const m of text.matchAll(regex))protectedSpans.push({start:m.index,end:m.index+m[0].length});};
   // Protocols, web addresses and email are never treated as local filenames.
   protect(/\b[a-z][a-z0-9+.-]*:[^\s<>"'`]+/gi);

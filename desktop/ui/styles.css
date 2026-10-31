@@ -623,7 +623,7 @@ main>#view-documents { gap:10px; background:#f8faf6; padding:20px; overflow:auto
 .reader-page { display:flex; flex-direction:column; min-width:0; min-height:0; gap:7px; }
 .reader-outline { display:flex; align-items:center; gap:10px; color:#75877a; font-size:10px; flex:0 0 auto; }
 .reader-outline select { max-width:65%; flex:1; min-width:0; border:0; background:transparent; padding:5px; font-size:10px; color:#45684f; }
-#view-documents #document-frame { flex:1; height:0; min-height:0; width:100%; box-sizing:border-box; border:1px solid #dce5d9; border-radius:12px; background:white; }
+#view-documents #document-frame, #view-documents #local-atelier-frame { flex:1; height:0; min-height:0; width:100%; box-sizing:border-box; border:1px solid #dce5d9; border-radius:12px; background:white; }
 .reader-pagination { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; padding:6px 0; position:sticky; bottom:0; z-index:3; background:#f8faf6; }
 .reader-pagination button { display:flex; align-items:center; gap:14px; justify-content:flex-start; min-height:70px; padding:14px 18px; text-align:left; border-radius:12px; background:white; border:1px solid #d5e2d2; color:#3f604a; min-width:0; }
 .reader-pagination button>span:not([aria-hidden]) { min-width:0; }

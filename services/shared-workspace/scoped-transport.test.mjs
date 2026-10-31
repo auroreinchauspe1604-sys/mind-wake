@@ -17,6 +17,9 @@ import {
 import { prepareScopedJob } from "../../scripts/setup-scoped-workspace-job.mjs";
 import { setupWorkspace } from "../../scripts/setup-shared-workspace.mjs";
 import { readScopedJobConfig, runScopedWorkspaceJob } from "./scoped-job.mjs";
+import { preflightScopedJob } from "./scoped-job.mjs";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 import {
   localGrantScope,
   localRestoreOperation,
@@ -114,6 +117,195 @@ function fixture(t) {
     cleanup: () => fs.rmSync(base, { recursive: true, force: true }),
   };
 }
+
+test(
+  "recipient CLI diagnostic against supervised TLS fixtures: configuration, auth, scope, TLS, read and stop",
+  { timeout: 60000, skip: process.platform !== "win32" },
+  async (t) => {
+    const f = fixture(t);
+    const manager = new BackgroundJobs(f.data, () => true);
+    t.after(async () => {
+      await manager.close();
+      f.cleanup();
+    });
+    const logs = [];
+    const cli = async (...args) => {
+      let result;
+      try {
+        result = await promisify(execFile)(
+          process.execPath,
+          [path.resolve("services/shared-workspace/cli.mjs"), ...args],
+          { windowsHide: true },
+        );
+      } catch (error) {
+        result = error;
+      }
+      logs.push(result.stdout, result.stderr);
+      return JSON.parse(result.stdout);
+    };
+    assert.equal((await cli("scope-diagnose")).status, "not_configured");
+    assert.equal(
+      (await cli("scope-diagnose", "--credential", path.join(f.base, "private", "missing.json")))
+        .reason,
+      "private_file_missing",
+    );
+    assert.equal((await cli("scope-preflight")).reason, "target_config_required");
+    assert.equal((await cli("scope-preflight", "--config", f.config)).status, "ready_to_start");
+    const original = JSON.parse(fs.readFileSync(f.config));
+    fs.writeFileSync(f.config, JSON.stringify({ ...original, host: "203.0.113.1" }));
+    assert.equal(preflightScopedJob(f.config).reason, "private_transport_required");
+    fs.writeFileSync(f.config, JSON.stringify({ ...original, host: "127.0.0.2" }));
+    assert.equal(preflightScopedJob(f.config).reason, "certificate_host_mismatch");
+    fs.writeFileSync(f.config, JSON.stringify(original));
+    const prepared = prepareScopedJob({ workspace: f.workspace, config: f.config });
+    const job = manager.store.submit(
+      "Diagnostic fixture",
+      prepared.script,
+      [],
+      "diagnostic-fixture",
+    );
+    await manager.tick();
+    const readyFile = path.join(jobOutputDir(f.data, job.id), "scoped-ready.json");
+    await until(() => fs.existsSync(readyFile));
+    const ready = JSON.parse(fs.readFileSync(readyFile));
+    const endpoint = `https://127.0.0.1:${ready.port}/v1/scoped-workspace`;
+    const file = path.join(f.base, "private", "diagnostic.json");
+    const configuration = { ...f.reader, endpoint, caFile: f.cert };
+    const save = (changes = {}) =>
+      fs.writeFileSync(file, JSON.stringify({ ...configuration, ...changes }));
+    save();
+    const baseConfig = path.join(f.base, "private", "native.toml");
+    const baseBytes = Buffer.from(
+      '# Existing native configuration\r\n[mcp_servers.other]\r\ncommand = "existing"\r\n',
+    );
+    fs.writeFileSync(baseConfig, baseBytes);
+    const candidate = path.join(f.base, "private", "candidate.toml");
+    const fragment = path.join(f.base, "private", "fragment.toml");
+    await setupWorkspace({ role: "scoped", credential: file, output: fragment });
+    const preparation = await setupWorkspace({
+      role: "scoped",
+      credential: file,
+      output: candidate,
+      baseConfig,
+    });
+    assert.equal(preparation.baseSha256, hash(baseBytes));
+    assert.deepEqual(fs.readFileSync(baseConfig), baseBytes);
+    assert.deepEqual(fs.readFileSync(candidate).subarray(0, baseBytes.length), baseBytes);
+    assert.equal(
+      fs.readFileSync(candidate, "utf8"),
+      baseBytes.toString() + "\n\n" + fs.readFileSync(fragment, "utf8"),
+    );
+    await assert.rejects(
+      setupWorkspace({ role: "scoped", credential: file, output: candidate }),
+      /EEXIST/,
+    );
+    await assert.rejects(
+      setupWorkspace({
+        role: "scoped",
+        credential: file,
+        output: path.join(f.base, "private", "duplicate.toml"),
+        baseConfig: candidate,
+      }),
+      /mcp_server_already_present/,
+    );
+    // Launch exactly the generated native fragment, not a second hand-written command.
+    const preparedText = fs.readFileSync(fragment, "utf8");
+    const transport = new StdioClientTransport({
+      command: JSON.parse(preparedText.match(/^command = (.+)$/m)[1]),
+      args: JSON.parse(preparedText.match(/^args = (.+)$/m)[1]),
+      stderr: "pipe",
+    });
+    transport.stderr?.on("data", (chunk) => logs.push(chunk.toString()));
+    const native = new Client({ name: "prepared-native-fixture", version: "1" });
+    try {
+      await native.connect(transport);
+      assert.equal((await native.listTools()).tools.length, 7);
+      const listing = JSON.parse(
+        (await native.callTool({ name: "workspace_list", arguments: {} })).content[0].text,
+      );
+      const reading = JSON.parse(
+        (await native.callTool({ name: "workspace_read", arguments: { path: "story.md" } }))
+          .content[0].text,
+      );
+      assert.equal(listing.scope, "writing");
+      assert.equal(reading.scope, "writing");
+      assert.equal(reading.hash, hash(fs.readFileSync(path.join(f.root, "story.md"))));
+    } finally {
+      await native.close();
+    }
+    const run = (scope = "writing", probe = "story.md") =>
+      cli("scope-diagnose", "--credential", file, "--scope", scope, "--probe", probe, "--fixture");
+    const success = await run();
+    assert.equal(success.status, "fixture_read_succeeded");
+    assert.equal(success.remoteAccessVerified, false);
+    assert.equal(success.server.tlsAuthorized, true);
+    assert.equal(success.scope, "writing");
+    assert.equal(success.probe.sha256, hash(fs.readFileSync(path.join(f.root, "story.md"))));
+    assert.equal(success.listing.entries, 1);
+    assert.equal((await run("other")).status, "scope_refused");
+    assert.equal((await run("writing", "../story.md")).status, "not_configured");
+    save({ token: "0".repeat(64) });
+    assert.equal((await run()).status, "auth_refused");
+    save({ endpoint: "https://203.0.113.1:9447/v1/scoped-workspace" });
+    assert.equal((await run()).reason, "private_transport_required");
+    save({ endpoint: endpoint.replace("/v1/scoped-workspace", "/v1/messages") });
+    assert.equal((await run()).reason, "invalid_endpoint");
+    const unrelated = fixture(t);
+    try {
+      save({ caFile: unrelated.cert });
+      assert.equal((await run()).status, "tls_refused");
+    } finally {
+      unrelated.cleanup();
+    }
+    save();
+    const state = JSON.parse(fs.readFileSync(f.state));
+    const reader = state.grants.find((g) => g.id === f.reader.capability);
+    reader.rights = ["list"];
+    fs.writeFileSync(f.state, JSON.stringify(state));
+    const denied = await run();
+    assert.equal(denied.status, "scope_refused");
+    assert.equal(denied.stage, "read");
+    reader.rights = ["list", "read"];
+    fs.writeFileSync(f.state, JSON.stringify(state));
+    revoke(f.state, f.reader.capability);
+    const revoked = await run();
+    assert.equal(revoked.status, "auth_refused");
+    assert.match(revoked.note, /revoked/);
+    manager.store.cancel(job.id);
+    await manager.tick();
+    await until(async () => !(await listening(ready.port)));
+    assert.equal((await run()).status, "inaccessible");
+    const serialized = logs.join("\n");
+    for (const secret of [
+      f.reader.token,
+      f.owner.token,
+      fs.readFileSync(path.join(f.root, "story.md"), "utf8").trim(),
+      fs.readFileSync(f.key, "utf8"),
+    ])
+      assert.ok(
+        !serialized.includes(secret),
+        "diagnostic output must not contain secrets or probe content",
+      );
+    console.log(
+      JSON.stringify({
+        proof: "fixture-only-recipient-diagnostic",
+        success,
+        cases: [
+          "not-configured",
+          "target-preflight",
+          "no-private-transport",
+          "TLS-refused",
+          "auth-refused",
+          "scope-refused",
+          "read-right-refused",
+          "revoked",
+          "stopped",
+          "no-secrets-in-logs",
+        ],
+      }),
+    );
+  },
+);
 
 test(
   "two real MCP clients through valid TLS in a Wake Job Object: CRUD, auth, revocation and supervised stops",

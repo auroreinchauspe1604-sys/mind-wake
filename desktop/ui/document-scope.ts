@@ -20,6 +20,6 @@ export class DocumentScopeState {
   select(value: unknown): void {this.#scope = documentScope(value); this.#epoch++;}
   capture(): ScopeTicket {return {scope:this.#scope,epoch:this.#epoch};}
   accepts(ticket: ScopeTicket): boolean {
-    return this.local !== null && ticket.scope === this.#scope && ticket.epoch === this.#epoch;
+    return ticket.scope === this.#scope && ticket.epoch === this.#epoch;
   }
 }

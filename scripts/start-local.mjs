@@ -111,6 +111,12 @@ export async function startLocal(manifestFile, role, options = {}) {
     MIND_WAKE_BACKGROUND_JOBS: role === "agent" ? "1" : "0",
     MIND_WAKE_NODE: m.node,
     MIND_WAKE_DESKTOP_SUPERVISED: options.supervised ? "1" : "0",
+    ...(options.startupReceipt
+      ? {
+          MIND_WAKE_STARTUP_RECEIPT: options.startupReceipt.file,
+          MIND_WAKE_STARTUP_INSTANCE: options.startupReceipt.instance,
+        }
+      : {}),
     ...desktopRuntimeEnv(m, role),
   };
   if (role === "desktop") {

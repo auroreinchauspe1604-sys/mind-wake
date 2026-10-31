@@ -3,7 +3,6 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod";
 import { RemoteHubLink } from "./shared-https.js";
-import { registerPeerTaskSender } from "./peer-task-tools.js";
 import {
   HubError,
   partyRefSchema,
@@ -135,5 +134,13 @@ server.registerTool(
       ...(in_reply_to === undefined ? {} : { inReplyTo: in_reply_to }),
     }),
 );
-registerPeerTaskSender(server, process.env, { call: (r) => hub.call(r as never) });
+// Keep the default five-tool bootstrap independent of optional local extensions.
+if (process.env["MIND_WAKE_PEER_TASKS"] === "1") {
+  const { registerPeerTaskSender } = await import("./peer-task-tools.js");
+  registerPeerTaskSender(server, process.env, { call: (r) => hub.call(r as never) });
+}
+if (process.env["MIND_WAKE_MAINTENANCE"] === "1") {
+  const { registerMaintenanceTools } = await import("./maintenance-tools.js");
+  registerMaintenanceTools(server, hub);
+}
 await server.connect(new StdioServerTransport());

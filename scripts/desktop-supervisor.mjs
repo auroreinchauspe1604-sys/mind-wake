@@ -4,7 +4,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
-import { startLocal } from "./start-local.mjs";
+import { startLocal, nodeArgs } from "./start-local.mjs";
 import { codexRuntimeEnv } from "./installation.mjs";
 
 export function restartDelay(code, signal, failures) {
@@ -26,7 +26,12 @@ export async function startSupervised(manifestFile) {
     await new Promise((resolve, reject) => {
       const child = spawn(
         m.node,
-        [path.join(m.repoDir, "scripts/desktop-supervisor.mjs"), "--manifest", manifestFile],
+        [
+          ...nodeArgs(m),
+          path.join(m.repoDir, "scripts/desktop-supervisor.mjs"),
+          "--manifest",
+          manifestFile,
+        ],
         {
           cwd: m.repoDir,
           detached: true,
@@ -91,6 +96,11 @@ export async function supervise(manifestFile, startup, launch = startLocal) {
     } catch (error) {
       log(`startup: ${error.message}`);
     }
+  }
+  const configured = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+  if (configured.maintenance) {
+    const { superviseDesktopMaintenance } = await import("./desktop-maintenance.mjs");
+    return superviseDesktopMaintenance(manifestFile, launch);
   }
   let failures = 0;
   for (;;) {

@@ -114,6 +114,12 @@ pub fn wake(verb: Verb) -> Result<CliRun, String> {
     run(wake_args(verb.args())?, None)
 }
 
+/// Read-only local Git binding; no endpoint or path is accepted from the webview.
+pub fn aurore_document(relative: String, read: bool, image: bool, version: Option<String>) -> Result<CliRun, String> {
+    let input = serde_json::json!({"relative": relative, "read": read, "image": image, "version": version}).to_string();
+    run(vec![repo().join("services/shared-workspace/git-document-reader-main.mjs").into()], Some(input))
+}
+
 /// Fixed profile-local operations. Values are separate argv entries, never shell text.
 pub fn workspace_sync(action: &str, configuration: Option<(String, String, bool)>) -> Result<CliRun, String> {
     if !matches!(action, "status" | "configure" | "now") {

@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
 import { DocumentScopeState, documentScopeLabel, localDocumentScope } from './document-scope.js';
 
-it('restores the pending Aurore scope without ever mapping it to a local backend',()=>{
+it('restores the linked Aurore scope without ever mapping it to a local backend',()=>{
   const state=new DocumentScopeState('aurore');
   expect(state.current).toBe('aurore');expect(state.local).toBeNull();
-  expect(state.accepts(state.capture())).toBe(false);
+  expect(state.accepts(state.capture())).toBe(true);
   expect(documentScopeLabel(state.current)).toBe('Atelier d’Aurore');
   expect(localDocumentScope('aurore')).toBeNull();
   expect(new DocumentScopeState('invalid').current).toBe('agent');

@@ -3,11 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
-import { readScopedJobConfig } from "../services/shared-workspace/scoped-job.mjs";
+import { preflightScopedJob } from "../services/shared-workspace/scoped-job.mjs";
 
 export function prepareScopedJob({ workspace, config }) {
   config = fs.realpathSync.native(config);
-  readScopedJobConfig(config);
+  if (preflightScopedJob(config).status !== "ready_to_start")
+    throw new Error("target_preflight_refused");
   const root = fs.realpathSync.native(workspace);
   const jobs = fs.realpathSync.native(path.join(root, "jobs"));
   if (jobs.toLowerCase() !== path.join(root, "jobs").toLowerCase())

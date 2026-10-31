@@ -96,3 +96,33 @@ test("parallel requests do not build twice", async (t) => {
   unblock();
   assert.equal((await first).state, "installed");
 });
+
+test("maintenance pin refuses a fetched but unapproved revision before builds", async (t) => {
+  const f = fixture(t);
+  const result = await checkUpdate(f.file, { run: f.run, expectedRevision: "b".repeat(40) });
+  assert.equal(result.state, "error");
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.file)), f.m);
+  assert.equal(
+    f.calls.some(([exe]) => exe !== "git"),
+    false,
+  );
+});
+
+test("maintenance guard rechecks before manifest switch and preserves active install on revocation", async (t) => {
+  const f = fixture(t);
+  let revoked = false;
+  const result = await checkUpdate(f.file, {
+    run: async (...args) => {
+      const value = await f.run(...args);
+      if (args[0] === "cargo") revoked = true;
+      return value;
+    },
+    expectedRevision: "a".repeat(40),
+    beforeStep: () => {
+      if (revoked) throw Error("local maintenance grant revoked");
+    },
+  });
+  assert.equal(result.state, "error");
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.file)), f.m);
+  assert.equal(fs.existsSync(path.join(f.dir, "previous-manifest.json")), false);
+});

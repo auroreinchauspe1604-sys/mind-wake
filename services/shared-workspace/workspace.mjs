@@ -646,7 +646,11 @@ export async function callScopedWorkspace(credential, body) {
   return workspaceRequest(credential, body, "/v1/scoped-workspace");
 }
 
-async function workspaceRequest({ endpoint, ca, capability, participant, token }, body, route) {
+async function workspaceRequest(
+  { endpoint, ca, capability, participant, token, observe },
+  body,
+  route,
+) {
   const url = new URL(endpoint);
   if (
     url.protocol !== "https:" ||
@@ -676,6 +680,12 @@ async function workspaceRequest({ endpoint, ca, capability, participant, token }
         },
       },
       (res) => {
+        // Optional local diagnostic evidence from the verified TLS connection, never a log.
+        const peer = res.socket.getPeerCertificate();
+        const evidence = {
+          tlsAuthorized: res.socket.authorized,
+          certificateSha256: peer.fingerprint256,
+        };
         const chunks = [];
         let size = 0;
         res.on("data", (chunk) => {
@@ -687,6 +697,8 @@ async function workspaceRequest({ endpoint, ca, capability, participant, token }
         res.on("end", () => {
           try {
             const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (res.statusCode !== 200 && !result.error) throw new Error("invalid_response");
+            observe?.(evidence);
             result.error ? reject(new Error(result.error)) : resolve(result.result);
           } catch (error) {
             reject(error);
@@ -1059,7 +1071,7 @@ export function createScopedWorkspaceSession({ stateFile, credential, signal }) 
         case "search":
           return scopeSearch(cap, body, check);
         case "read":
-          return { ...scopeRead(cap.root, body.path), untrusted: true };
+          return { ...scopeRead(cap.root, body.path), scope: cap.scope, untrusted: true };
         case "list": {
           // Reuse bounded traversal/metadata and do not expose content.
           const output = listWorkspace(cap.root, body);
@@ -1072,7 +1084,7 @@ export function createScopedWorkspaceSession({ stateFile, credential, signal }) 
               return false;
             }
           });
-          return { ...output, untrusted: true };
+          return { ...output, scope: cap.scope, untrusted: true };
         }
         case "propose":
           // No new direct authority; legacy review remains in the existing local MCP.

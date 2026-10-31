@@ -6,6 +6,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Hub } from "./hub.js";
 import type { HubCall } from "./hub-link.js";
 import { HubError, hubRequestSchema, type HubResponse } from "./protocol.js";
+import type { MaintenanceCall } from "../../src/communication/maintenance-protocol.js";
 
 export const SHARED_OPS = new Set(["whoami", "directory", "send_message", "read_inbox", "reply"]);
 export const SHARED_MAX_BYTES = 32_768;
@@ -27,6 +28,10 @@ export function serveSharedHub(
   hub: Hub,
   tls: ServerOptions,
   keyIsActive: (key: string) => boolean,
+  maintenance?: {
+    parse(raw: unknown): { id: number } | null;
+    handle(actor: string, raw: unknown): unknown;
+  },
 ) {
   let inFlight = 0;
   // Global pre-auth admission window: bounded state, including invalid credentials.
@@ -67,7 +72,14 @@ export function serveSharedHub(
         if (size > SHARED_MAX_BYTES) throw new HubError("bad_request", "Corps trop grand.");
         chunks.push(bytes);
       }
-      const parsed = hubRequestSchema.safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      const raw: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      const control = maintenance?.parse(raw);
+      if (maintenance && control) {
+        id = control.id;
+        send(200, { id, ok: true, result: maintenance.handle(party.ref, raw) });
+        return;
+      }
+      const parsed = hubRequestSchema.safeParse(raw);
       if (!parsed.success || !SHARED_OPS.has(parsed.data.op))
         throw new HubError("permission_denied", "Opération non exposée.");
       id = parsed.data.id;
@@ -117,6 +129,9 @@ export class RemoteHubLink {
   readonly #url: URL;
   readonly #key: string;
   #next = 0;
+  get endpoint(): string {
+    return this.#url.href;
+  }
   constructor(endpoint: string, key: string) {
     try {
       this.#url = new URL(endpoint);
@@ -137,6 +152,12 @@ export class RemoteHubLink {
   }
   async call<T>(call: HubCall): Promise<T> {
     if (!SHARED_OPS.has(call.op)) throw new HubError("permission_denied", "Opération non exposée.");
+    return this.exchange<T>(call);
+  }
+  async maintenance<T>(call: MaintenanceCall): Promise<T> {
+    return this.exchange<T>(call);
+  }
+  private async exchange<T>(call: HubCall | MaintenanceCall): Promise<T> {
     const id = ++this.#next;
     const body = JSON.stringify({ ...call, id });
     if (Buffer.byteLength(body) > SHARED_MAX_BYTES)

@@ -84,3 +84,12 @@ it('queues new txt messages in order without replaying history or polling or cho
  state.observe([fresh]);expect(state.resolve(txt)).toEqual([]);
  state.observe([item('older','next.txt')],true);expect(state.resolve(txt)).toEqual([]);
 });
+
+it('never opens a local SYSTEM basename from an explicit external Markdown link',()=>{
+ const system:FileCatalog[]=[{scope:'agent',entries:[{relative:'artifacts/diagnostic/SYSTEM.md'}]}];
+ const state=new MessageFileQueue(started);state.observe([]);
+ state.observe([item('actual-repo-link','[SYSTEM.md](https://github.com/mind-protocol/scisense-aurore-workspace/blob/main/SYSTEM.md)')]);
+ expect(state.resolve(system)).toEqual([]);expect(state.entries).toEqual([]);
+ state.observe([item('explicit-local','artifacts/diagnostic/SYSTEM.md')]);
+ expect(state.resolve(system).map(file=>file.relative)).toEqual(['artifacts/diagnostic/SYSTEM.md']);
+});

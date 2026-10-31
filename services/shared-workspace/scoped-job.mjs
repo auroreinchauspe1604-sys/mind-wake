@@ -2,8 +2,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import { once } from "node:events";
+import { X509Certificate, createPrivateKey } from "node:crypto";
+import { createSecureContext } from "node:tls";
 import { privateFile } from "../../scripts/setup-shared-workspace.mjs";
 import { createScopedWorkspaceServer, loadState } from "./workspace.mjs";
+import { privateHost } from "./scoped-client.mjs";
 
 const inside = (root, target) => {
   const rel = path.relative(root, target);
@@ -33,12 +36,73 @@ export function readScopedJobConfig(file) {
   return { stateFile, keyFile, certFile, host: config.host, port: config.port };
 }
 
+export function preflightScopedJob(file) {
+  if (!file) return { status: "not_configured", reason: "target_config_required", started: false };
+  try {
+    const config = readScopedJobConfig(file);
+    if (!privateHost(config.host)) throw new Error("private_transport_required");
+    const key = fs.readFileSync(config.keyFile),
+      cert = fs.readFileSync(config.certFile);
+    const certificate = new X509Certificate(cert);
+    if (!certificate.checkIP(config.host)) throw new Error("certificate_host_mismatch");
+    if (
+      Date.parse(certificate.validFrom) > Date.now() ||
+      Date.parse(certificate.validTo) <= Date.now()
+    )
+      throw new Error("certificate_expired_or_not_yet_valid");
+    if (!certificate.checkPrivateKey(createPrivateKey(key)))
+      throw new Error("certificate_key_mismatch");
+    createSecureContext({ key, cert, minVersion: "TLSv1.2" });
+    const scopes = loadState(config.stateFile)
+      .grants.filter((g) => g.active && g.scope)
+      .map((g) => ({
+        scope: g.scope,
+        participant: g.participant,
+        rights: g.rights,
+        capability: g.id,
+      }));
+    if (!scopes.length) throw new Error("no_active_scopes");
+    return {
+      status: "ready_to_start",
+      started: false,
+      transport: "existing_private_ip_tls",
+      host: config.host,
+      port: config.port,
+      certificateSha256: certificate.fingerprint256,
+      scopes,
+    };
+  } catch (error) {
+    const known = [
+      "no_active_scopes",
+      "private_transport_required",
+      "private_file_inside_git",
+      "private_file_inside_scope",
+      "explicit_host_required",
+      "invalid_port",
+      "certificate_host_mismatch",
+      "certificate_key_mismatch",
+      "certificate_expired_or_not_yet_valid",
+    ];
+    return {
+      status: "not_configured",
+      started: false,
+      reason: known.includes(error.message)
+        ? error.message
+        : error.code === "ENOENT"
+          ? "private_file_missing"
+          : "invalid_target_configuration",
+    };
+  }
+}
+
 export async function runScopedWorkspaceJob(file) {
   const job = process.env.MIND_WAKE_JOB_ID;
   const output = process.env.MIND_WAKE_JOB_OUTPUT;
   if (!/^job_[0-9a-f-]{36}$/.test(job ?? "") || !output || !path.isAbsolute(output))
     throw new Error("supervised_wake_job_required");
   const config = readScopedJobConfig(file);
+  if (preflightScopedJob(file).status !== "ready_to_start")
+    throw new Error("target_preflight_refused");
   const controller = new AbortController();
   const server = createScopedWorkspaceServer({
     stateFile: config.stateFile,

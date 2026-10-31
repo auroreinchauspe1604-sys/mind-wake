@@ -170,7 +170,7 @@ L'humain peut choisir **Always-on** pour enchaîner les réveils après chaque r
 
 L'installation crée un raccourci bureau et active **Démarrer avec Windows** par défaut. Cette option se désactive dans le menu de l'icône Wake ; la réinstallation conserve le choix. Le lancement Windows utilise **On** (planifié), respecte Pause et Force-off, et ne modifie pas un moteur déjà actif. Les lancements par raccourci et `scripts/open-desktop.mjs` relancent le panneau après un crash ; **Quitter le panneau** arrête volontairement cette supervision. Voir `desktop/README.md` pour les commandes et les journaux.
 
-Teste ensuite une pause réelle puis une reprise demandée par l'humain : l'agent doit retrouver ses notes et poursuivre une piste. Fermer la fenêtre laisse le moteur fonctionner. Ce guide n'installe aucun démarrage automatique à l'ouverture de Windows.
+Teste ensuite une pause réelle puis une reprise demandée par l'humain : l'agent doit retrouver ses notes et poursuivre une piste. Fermer la fenêtre laisse le moteur fonctionner. Le démarrage avec Windows suit le réglage décrit ci-dessus ; il ne lève ni Pause ni Force-off.
 
 ## 6. Une première rencontre entre vos agents
 

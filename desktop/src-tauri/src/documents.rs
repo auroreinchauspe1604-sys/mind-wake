@@ -28,9 +28,25 @@ fn document_format(path: &Path) -> Option<&'static str> {
     }
 }
 
+// Installation-local opt-in, supplied by its authorized launcher. Never inferred
+// from file content, a peer message, a URL, or the personal grants in this repo.
+fn local_app(scope: &str, relative: &str, enabled: Option<&str>) -> Option<serde_json::Value> {
+    if enabled == Some("1") && scope == "agent" && relative == "artifacts/creations/atelier-dj/index.html" {
+        Some(serde_json::json!({"id":"atelier-dj","url":"http://127.0.0.1:8941/"}))
+    } else { None }
+}
+
 #[tauri::command]
-pub async fn conversation_image(reference: String, scope: Option<String>) -> Result<serde_json::Value, String> {
+pub async fn conversation_image(reference: String, scope: Option<String>, version: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if scope.as_deref() == Some("aurore") {
+            let value = aurore_read(reference.clone(), true, true, version)?;
+            if value["state"] != "available" { return Err("Image du clone indisponible".into()); }
+            let bytes: Vec<u8> = serde_json::from_value(value["bytes"].clone()).map_err(|_| "Image invalide")?;
+            let extension = Path::new(&reference).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+            let data_url = crate::conversation_images::raster_data_url(&bytes, &extension)?;
+            return Ok(serde_json::json!({"dataUrl": data_url}));
+        }
         let roots: Vec<PathBuf> = match scope {
             Some(scope) => vec![root(&scope)?],
             None => ["agent", "project"].iter().filter_map(|scope| root(scope).ok()).collect(),
@@ -50,15 +66,19 @@ fn resolve(base: &Path, relative: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub async fn document_browse(scope: String, relative: String, read: bool, recursive: Option<bool>) -> Result<serde_json::Value, String> {
+pub async fn document_browse(scope: String, relative: String, read: bool, recursive: Option<bool>, version: Option<String>) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        if scope == "aurore" {
+            return aurore_read(relative, read, false, version);
+        }
         let base = root(&scope)?;
         let target = resolve(&base, &relative)?;
         if read {
             if !supported(&target) || !target.is_file() { return Err("Choisir un fichier HTML, Markdown ou texte brut (.txt)".into()); }
             if target.metadata().map_err(|e| e.to_string())?.len() > 2_000_000 { return Err("Document trop volumineux (maximum 2 Mo)".into()); }
             let text = std::fs::read_to_string(&target).map_err(|e| e.to_string())?;
-            return Ok(serde_json::json!({"text": text, "format": document_format(&target).ok_or("Format de document inconnu")?}));
+            let app = local_app(&scope, &relative, std::env::var("MIND_WAKE_ATELIER_DJ").ok().as_deref());
+            return Ok(serde_json::json!({"text": text, "format": document_format(&target).ok_or("Format de document inconnu")?, "localApp":app}));
         }
         if recursive.unwrap_or(false) {
             return catalog(&base, &target);
@@ -115,6 +135,16 @@ fn catalog(base: &Path, start: &Path) -> Result<serde_json::Value, String> {
 mod tests {
     use super::*;
     #[test]
+    fn interactive_atelier_requires_local_opt_in_exact_scope_and_path() {
+        let page = "artifacts/creations/atelier-dj/index.html";
+        assert!(local_app("agent", page, Some("1")).is_some());
+        for flag in [None, Some("0"), Some("true")] { assert!(local_app("agent", page, flag).is_none()); }
+        for scope in ["project", "aurore", ""] { assert!(local_app(scope, page, Some("1")).is_none()); }
+        for path in ["index.html", "artifacts/creations/other/index.html", "artifacts/creations/atelier-dj/../atelier-dj/index.html", "http://127.0.0.1:8941/"] {
+            assert!(local_app("agent", path, Some("1")).is_none());
+        }
+    }
+    #[test]
     fn rejects_escape_and_non_document_extensions() {
         let base = Path::new(env!("CARGO_MANIFEST_DIR")).canonicalize().unwrap();
         assert!(resolve(&base, "../Cargo.toml").is_err());
@@ -142,4 +172,10 @@ mod tests {
         assert_eq!(result["truncated"], false);
         std::fs::remove_dir_all(&dir).unwrap();
     }
+}
+
+fn aurore_read(relative: String, read: bool, image: bool, version: Option<String>) -> Result<serde_json::Value, String> {
+    let run = crate::cli::aurore_document(relative, read, image, version).map_err(|_| "Lecture du clone indisponible")?;
+    if run.exit_code != 0 { return Err("Lecture du clone indisponible".into()); }
+    serde_json::from_str(&run.stdout).map_err(|_| "Lecture du clone indisponible".into())
 }
